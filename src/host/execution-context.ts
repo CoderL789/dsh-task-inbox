@@ -27,6 +27,17 @@
  */
 export type ExecutionStrategy = 'new' | 'reuse' | 'fork'
 
+/**
+ * Whether a session has started a turn.
+ *
+ * - `blank`: confirmed no `turn/start` in its stored log (reusable blank).
+ * - `non-blank`: confirmed at least one `turn/start`.
+ * - `unknown`: the log could not be read, or the read produced no decisive
+ *   evidence (e.g., no persistence read capability). Conservative callers must
+ *   not treat this as blank or as executable.
+ */
+export type BlankState = 'blank' | 'non-blank' | 'unknown'
+
 export type SelectionErrorCode =
   | 'context_unavailable'
   | 'workspace_missing'
@@ -57,7 +68,8 @@ export interface ExecutionSession {
   createdAt?: number
   live: boolean
   stored: boolean
-  blank: boolean
+  /** Tri-state blank classification; never inferred from an absent eventCount. */
+  blankState: BlankState
   suitableForReuse: boolean
   suitableForFork: boolean
   /** Machine-readable reasons a strategy is unavailable. */
@@ -103,6 +115,8 @@ export interface AssembleExecutionContextInput {
   snapshots: readonly RawSessionSnapshot[]
   liveSessionIds: readonly string[]
   titles: ReadonlyMap<string, string>
+  /** Per-session tri-state blank classification from a read-only log probe. */
+  blankStates: ReadonlyMap<string, BlankState>
 }
 
 /** Build candidates from already-fetched descriptors (pure, unit-tested). */
@@ -132,16 +146,20 @@ export function assembleExecutionContext(
       if (snapshot?.origin === 'subagent') continue
 
       const stored = snapshot !== undefined
-      const blank = stored ? (snapshot?.eventCount ?? 0) === 0 : false
+      const blankState: BlankState = stored
+        ? (input.blankStates.get(sessionId) ?? 'unknown')
+        : 'unknown'
       const unavailableReasons: string[] = []
       const warnings: string[] = []
 
       if (!stored) unavailableReasons.push('session_not_found')
-      else if (blank) unavailableReasons.push('blank_session')
+      else if (blankState === 'blank') unavailableReasons.push('blank_session')
+      else if (blankState === 'unknown') unavailableReasons.push('session_state_unknown')
 
       warnings.push('archive_state_unknown')
       warnings.push('fork_requires_completed_turn')
 
+      const usable = stored && blankState === 'non-blank'
       sessions.push({
         sessionId,
         workspaceId: workspace.id,
@@ -149,9 +167,9 @@ export function assembleExecutionContext(
         createdAt: snapshot?.createdAt,
         live: live.has(sessionId),
         stored,
-        blank,
-        suitableForReuse: stored && !blank,
-        suitableForFork: stored && !blank,
+        blankState,
+        suitableForReuse: usable,
+        suitableForFork: usable,
         unavailableReasons,
         warnings,
       })
@@ -263,8 +281,19 @@ export interface PersistedSessionLike {
   readonly eventCount?: number
 }
 
+/** The read-only subset of a DSH `SessionHandle` needed for blank detection. */
+export interface SessionHandleLike {
+  read(
+    offset?: number,
+    length?: number,
+  ): Promise<{ readonly events: readonly { readonly type: string }[] }>
+  close(): Promise<void>
+}
+
 export interface SessionPersistenceLike {
   list(): Promise<readonly PersistedSessionLike[]>
+  /** Read-only open: never takes write ownership (DSH contract). */
+  open?(id: string, access: 'read'): Promise<SessionHandleLike>
 }
 
 export interface LiveSessionsLike {
@@ -288,6 +317,63 @@ function unavailable(reason: string): ExecutionContextSnapshot {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+const BLANK_SCAN_PAGE = 200
+const BLANK_SCAN_LIMIT = 5000
+
+/**
+ * Determine whether a stored session has started a turn, using only the
+ * supported read-only persistence surface.
+ *
+ * `SessionPersistenceSnapshot.eventCount` is OPTIONAL: the JSONL backend's
+ * `list()`/`stat()` read only the header frame, so an absent count says
+ * nothing about emptiness (treating `undefined` as 0 was the Task 03A bug).
+ * The authoritative check is the stored log itself: `open(id, 'read')` never
+ * takes write ownership, and `SessionHandle.read()` returns the event stream.
+ * `turn/start` is the same "has this session started" rule `session.create`
+ * uses for blank-session reuse.
+ *
+ * Returns `unknown` whenever the log cannot be read, rather than guessing.
+ */
+export async function detectSessionBlankState(
+  snapshot: PersistedSessionLike,
+  persistence: SessionPersistenceLike,
+): Promise<BlankState> {
+  // A present, exact zero is evidence of an empty (never-started) log.
+  if (snapshot.eventCount === 0) return 'blank'
+  if (persistence.open === undefined) return 'unknown'
+
+  let handle: SessionHandleLike
+  try {
+    handle = await persistence.open(String(snapshot.header.id), 'read')
+  } catch {
+    return 'unknown'
+  }
+
+  try {
+    let offset = 0
+    let scanned = 0
+    while (scanned < BLANK_SCAN_LIMIT) {
+      const page = await handle.read(offset, BLANK_SCAN_PAGE)
+      const events = page.events
+      if (events.length === 0) return 'blank'
+      if (events.some((event) => event.type === 'turn/start')) return 'non-blank'
+      scanned += events.length
+      offset += events.length
+      if (events.length < BLANK_SCAN_PAGE) return 'blank'
+    }
+    // The first 5000 events contain no turn start; do not claim blank.
+    return 'unknown'
+  } catch {
+    return 'unknown'
+  } finally {
+    try {
+      await handle.close()
+    } catch {
+      // Closing a read handle cannot change the classification.
+    }
+  }
 }
 
 /** Resolve the read-only context from the composed Host services. */
@@ -355,10 +441,21 @@ export async function buildExecutionContext(
     }
   }
 
+  // Read-only blank probe per stored session. Sequential to keep a preview
+  // request from opening many log handles at once.
+  const blankStates = new Map<string, BlankState>()
+  for (const snapshot of snapshots) {
+    blankStates.set(
+      String(snapshot.header.id),
+      await detectSessionBlankState(snapshot, deps.sessionPersistence),
+    )
+  }
+
   return assembleExecutionContext({
     workspaces,
     snapshots: rawSnapshots,
     liveSessionIds,
     titles,
+    blankStates,
   })
 }

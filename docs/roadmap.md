@@ -124,12 +124,12 @@
 | 2 | Workspace 列表、路径与可用性正确展示 | ✅ 已实现（public Host API + 单测） |
 | 3 | 会话列表只显示所选 Workspace 的会话 | ✅ 已实现（Host 关联 + 单测） |
 | 4 | 新建 / 复用 / Fork 三种策略与来源会话选择可用 | ✅ 已实现（预览） |
-| 5 | 不可用 Workspace / 不存在 / 空白 / 不适用会话有明确提示 | ✅ 已实现（不可用原因 + warning） |
+| 5 | 不可用 Workspace / 不存在 / 空白 / 不适用 / 状态未知会话有明确提示 | ✅ 已实现（空白三态 + 不可用原因 + warning） |
 | 6 | 切换 Workspace 会清除无效来源 Session | ✅ 已实现 |
 | 7 | 确认不会创建会话或派发任务，并明确提示未接通 | ✅ 已实现（预览提示） |
 | 8 | 中英文与明暗主题兼容 | ✅ 已实现，待人工验收 |
 
-**已执行的验证**：`pnpm build` / `typecheck` / `check` / `test`（**67/67**，含执行上下文筛选与策略校验测试）；未调用 `plugin_manager`，未创建 / Fork / 恢复真实 Session，未修改 Workspace 或 Profile。
+**已执行的验证**：`pnpm build` / `typecheck` / `check` / `test`（**77/77**，含执行上下文筛选、会话空白三态判定与策略校验测试）；未调用 `plugin_manager`，未创建 / Fork / 恢复真实 Session，未修改 Workspace 或 Profile。
 
 **风险 / 待验证**：
 
@@ -257,6 +257,7 @@
 | 2026-11-10 | Task 03A：完成 Workspace / Session / 派发 / 权限 API 验证，区分 public Host / Client / @Remote / 内部接口；记录于 api-notes | 已完成 |
 | 2026-11-10 | Task 03A：Host 只读执行上下文（Workspace / 会话候选 / 可用性）+ `execution-context` HTTP 操作；Client 执行前配置预览 UI（工作区 / 策略 / 来源会话 / 摘要 / 校验） | 已完成 |
 | 2026-11-10 | Task 03A 验证：build / typecheck / check / test（67/67）通过；未创建 / Fork / 恢复真实会话，未调用 plugin_manager | 已完成 |
+| 2026-11-10 | Task 03A 审查修复：Session 空白状态改为三态（确认空白/确认非空白/无法确认），通过只读日志 `turn/start` 判定；无法确认时保守排除；77/77 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 技术方案文档（三种策略 API、Session 产生/恢复/Fork、幂等与失败恢复） | 已完成 |
 | 2026-11-10 | Task 03A 浏览器交互与中英文 / 明暗主题人工验收 | 待完成（由用户执行） |
 
@@ -278,6 +279,6 @@
 | 12 | 整表重写带来的写放大与多进程写同一存储域不受支持 | 列表极大或双进程场景下性能 / 一致性 | 个人待办量级可接受；多进程场景不支持，文档已注明 |
 | 13 | 存储写入结果不确定（可能在 rename 之后失败） | 可能误报失败/成功或基于过期内存继续写 | **已修复**：区分确定/不确定，关闭重开存储域后按磁盘状态判定；无法恢复时进入保护态要求重启；有恢复与保护态测试 |
 | 14 | Task 03B 派发主路径依赖 `@Remote`（sessionController.create/fork/prompt） | 非第三方稳定契约；Host 内调用会绕过 Peer 访问策略 | Task 03B 前评估是否接受风险或改用/申请受支持 Host API；见 task-03b-design.md |
-| 15 | Task 03A 预览的信息限制 | 冷会话无标题；归档状态与「已完成轮次」无法在预览阶段确认 | UI 以 warning 明确提示，最终由派发时 Host 校验 |
+| 15 | Task 03A 预览的信息限制 | 冷会话无标题；归档状态与「已完成轮次」无法在预览阶段确认 | UI 以 warning 明确提示，最终由派发时 Host 校验；会话空白状态已改为三态并通过只读日志确认 |
 
 注：当前阶段未发布到 npm；安装均以本地插件包绝对路径为准。仓库地址：<https://github.com/CoderL789/dsh-task-inbox>。

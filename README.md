@@ -34,11 +34,11 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 当前为 **Task 03A：执行前配置与会话能力验证**。已具备：
 
-- 独立插件包（包名 `dsh-task-inbox`，版本 `0.3.0`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
+- 独立插件包（包名 `dsh-task-inbox`，版本 `0.3.1`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
 - **Host 半区**：通过 `ctx.storageDomain` 打开插件独立存储域 `task_inbox`（version 2、JSON 后端、单文件布局）。v2 把**整份有序待办列表存为单个 global 状态文档**，每个变更（新建 / 编辑 / 删除 / 排序）都是一次原子写；v1 的逐条记录表会在插件启动时自动迁移（一次性、保留原数据、失败则中止激活而不是显示空列表）。经 `TodoService` 提供校验、CRUD、排序、并发串行化与幂等创建；通过一个受认证的同源 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 暴露给 Client；新增只读 `execution-context` 操作，基于 public Host 服务（workspaceRegistry / sessionPersistence / sessions / sessionTitle）返回 Workspace 与会话候选；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；新建 / 编辑表单、列表（标题、描述、创建时间）、删除二次确认、上移 / 下移、加载中 / 成功 / 失败反馈；每条待办新增「执行」入口，打开执行前配置预览（工作区 / 策略 / 来源会话 / 摘要 / 校验提示），明确标注「仅预览，不会发送任务」；中文与英文文案；明暗主题适配；
 - 数据模型：`id`、`title`、`description`、`status`（本阶段仅 `todo`）、`createdAt`、`updatedAt`、`order`；
-- 67 个 Node 测试覆盖校验、排序、原子 CRUD、并发与幂等、v1→v2 迁移、存储不确定结果恢复、HTTP 分块 UTF-8 与字节上限、真实 `node:http` 集成，以及执行上下文筛选 / 策略校验。
+- 77 个 Node 测试覆盖校验、排序、原子 CRUD、并发与幂等、v1→v2 迁移、存储不确定结果恢复、HTTP 分块 UTF-8 与字节上限、真实 `node:http` 集成，以及执行上下文筛选 / 会话空白三态判定 / 策略校验。
 
 | 能力 | 当前 | 后续 |
 | --- | --- | --- |
@@ -170,7 +170,7 @@ dsh-task-inbox/
 
 - 本阶段不提供「标记完成」，待办状态固定为 `todo`；
 - 执行前配置仅预览：不创建 / 恢复 / Fork 真实会话，不派发 Agent 任务（Task 03B）；
-- 预览中的会话候选只基于 public Host API：空白会话不用于复用/Fork；归档状态与「已完成轮次」无法在预览阶段确认，由派发时 Host 最终校验；
+- 预览中的会话候选只基于 public Host API：会话空白状态分**确认空白 / 确认非空白 / 无法确认**三态——通过只读打开存储日志并检查是否出现 `turn/start` 判定；确认空白的会话不用于复用/Fork，无法确认的会话按保守策略不提供为候选（不会伪装成空白，也不会宣称可执行）；归档状态与「已完成轮次」无法在预览阶段确认，由派发时 Host 最终校验；
 - 工作区目录不可用时会在配置中标记并禁止选择；冷会话暂不显示标题（只显示占位标题与会话短 ID）；
 - 没有跨标签页 / 多窗口实时同步：列表在页面挂载时加载，其他窗口的修改需刷新后可见；
 - 每次变更重写整份有序列表（适合个人待办量级）；列表极大时写放大明显；

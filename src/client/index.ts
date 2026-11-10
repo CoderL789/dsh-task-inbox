@@ -117,7 +117,7 @@ interface ExecutionSession {
   createdAt?: number
   live: boolean
   stored: boolean
-  blank: boolean
+  blankState: 'blank' | 'non-blank' | 'unknown'
   suitableForReuse: boolean
   suitableForFork: boolean
   unavailableReasons: string[]
@@ -190,11 +190,16 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.session.placeholder': 'Select a session',
     'execution.session.empty': 'No sessions in this workspace.',
     'execution.session.blank': 'blank',
+    'execution.session.stateUnknown': 'state unknown',
     'execution.session.notFound': 'not found',
     'execution.session.live': 'live',
     'execution.session.noneSuitable': 'No session in this workspace is suitable for this strategy.',
     'execution.session.unavailableCount':
       '{n} session(s) in this workspace are not suitable for this strategy.',
+    'execution.session.unknownCount':
+      '{n} session(s) whose state could not be confirmed are not offered (conservative).',
+    'execution.session.unknownHint':
+      'A session is only offered when its stored log can be read and shows a started turn.',
     'execution.session.warningArchive':
       'Archive state is validated by the Host at dispatch time.',
     'execution.session.warningFork':
@@ -287,10 +292,13 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.session.placeholder': '选择会话',
     'execution.session.empty': '该工作区下没有会话。',
     'execution.session.blank': '空白',
+    'execution.session.stateUnknown': '状态未知',
     'execution.session.notFound': '不存在',
     'execution.session.live': '活跃',
     'execution.session.noneSuitable': '该工作区下没有适合此策略的会话。',
     'execution.session.unavailableCount': '该工作区下另有 {n} 个会话不适合此策略。',
+    'execution.session.unknownCount': '该工作区下另有 {n} 个会话状态无法确认，已保守排除。',
+    'execution.session.unknownHint': '只有能读取存储日志且确认已开始轮次的会话才会作为候选提供。',
     'execution.session.warningArchive': '归档状态将在派发时由 Host 校验。',
     'execution.session.warningFork': 'Fork 需要包含已完成轮次的会话；派发时由 Host 校验。',
     'execution.summary.title': '摘要',
@@ -779,7 +787,8 @@ function sessionDisplayLabel(t: Translate, session: ExecutionSession): string {
       ? session.title
       : t('execution.titleUnknown')
   const flags: string[] = []
-  if (session.blank) flags.push(t('execution.session.blank'))
+  if (session.blankState === 'blank') flags.push(t('execution.session.blank'))
+  if (session.blankState === 'unknown') flags.push(t('execution.session.stateUnknown'))
   if (!session.stored) flags.push(t('execution.session.notFound'))
   else if (session.live) flags.push(t('execution.session.live'))
   return flags.length === 0 ? title : `${title} (${flags.join(', ')})`
@@ -1158,6 +1167,9 @@ window.__ModuleLoader__.load({
               (session) => session.sessionId === executionSessionId,
             )
             const unsuitableCount = sessionsInWorkspace.length - strategySessions.length
+            const unknownCount = sessionsInWorkspace.filter(
+              (session) => session.blankState === 'unknown',
+            ).length
 
             function summaryRow(label: string, value: string): unknown {
               return h(
@@ -1340,6 +1352,17 @@ window.__ModuleLoader__.load({
                             ),
                           )
                         : null,
+                      unknownCount > 0
+                        ? h(
+                            'p',
+                            { style: STYLES.hintText },
+                            t('execution.session.unknownCount').replace(
+                              '{n}',
+                              String(unknownCount),
+                            ),
+                          )
+                        : null,
+                      h('p', { style: STYLES.hintText }, t('execution.session.unknownHint')),
                       h('p', { style: STYLES.hintText }, t('execution.session.warningArchive')),
                       executionStrategy === 'fork'
                         ? h('p', { style: STYLES.hintText }, t('execution.session.warningFork'))

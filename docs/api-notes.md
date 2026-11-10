@@ -543,7 +543,7 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 
 - 仅使用 public Host 服务：`workspaceRegistry.list()`、`sessionPersistence.list()`、`sessions.get()`、`sessionTitle.get(session)`；**不调用任何 @Remote、不 create/fork/resume/prompt**。
 - 新增只读 HTTP 操作 `execution-context`（经 Task 02 同源浏览器认证保护）返回 Workspace + 会话候选与可用性（`src/host/execution-context.ts`）。
-- 规则：Session 必须已存储且属于所选 Workspace；`eventCount === 0` 视为空白会话，不用于复用/Fork；`origin: 'subagent'` 排除；Workspace `status() !== 'ok'` 标记不可用；归档状态与「已完成轮次」不在预览阶段断言，作为 warning 交给派发时 Host 校验。
+- 规则：Session 必须已存储且属于所选 Workspace；**空白状态为三态**（`blank` / `non-blank` / `unknown`），通过只读 `sessionPersistence.open(id,'read')` + `SessionHandle.read()` 检查是否出现 `turn/start` 判定，`eventCount === 0` 仅作为“确认空白”的快速路径，`eventCount` 缺失**不再视为 0**（见文末「Task 03A 审查修复」）；确认空白不用于复用/Fork；`unknown` 按保守策略不提供为候选；`origin: 'subagent'` 排除；Workspace `status() !== 'ok'` 标记不可用；归档状态与「已完成轮次」不在预览阶段断言，作为 warning 交给派发时 Host 校验。
 - 单元测试：`test/execution-context.test.mjs` 覆盖按 Workspace 筛选、跨 Workspace 隔离、空白/缺失/subagent 排除、三种策略校验、服务缺失或持久化失败时降级；API 测试覆盖 `execution-context` 操作。
 
 ### 3. 三种执行策略的可行性结论
@@ -566,6 +566,44 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 
 ### 5. Task 03A 验证状态
 
-- `pnpm build` / `typecheck` / `check` / `test` 通过；`pnpm test` **67/67** 通过（新增执行上下文与策略校验用例）。
+- `pnpm build` / `typecheck` / `check` / `test` 通过；`pnpm test` **77/77** 通过（执行上下文、会话空白三态、策略校验等）。
 - 未创建 / Fork / 恢复任何真实 Session，未发送任何 Prompt，未调用 `plugin_manager`，未修改 Workspace / Session / Profile 配置。
 - 未验证：浏览器中的执行配置界面交互、中英文与明暗主题（需人工验收）；冷会话标题、归档状态与「已完成轮次」在预览阶段不可确认（已作为限制记录）。
+
+---
+
+## 附：Task 03A 审查修复——Session 空白状态误判（2026-11-10）
+
+### 1. 问题与运行时证据
+
+- 旧实现：`blank = (snapshot.eventCount ?? 0) === 0`，把 `undefined` 当成 0。
+- 运行时契约（`inspect:host Service.listService(service="sessionPersistence")`）：
+  - `SessionPersistenceSnapshot { header, formatStatus?, revision, eventCount?, sizeBytes?, location? }` —— **`eventCount` 是可选字段**。
+  - JSONL 后端 README「Reading the logs」明确：`stat(id)`/`list()` **只选择并翻译最高代 header，不读取事件行**（`pkg:@deepseek-ai/dsh-session-persistence-jsonl/README.md:87`）。因此 `eventCount` 缺失（或由实现/缓存决定不提供）并不表示会话为空。
+- 受支持的只读判定路径：
+  - `ctx.sessionPersistence.open(id, 'read')`：契约明确 “`read` never takes ownership and works while another handle (or process) holds write ownership”，不会恢复 Agent。
+  - `SessionHandle.read(offset?, length?)` 返回 `{ events }`：按事件偏移/数量分页读取日志。
+  - DSH 的“空白会话”语义来自 `session.create` 的复用规则：**尚未开始 turn**（`pkg:@deepseek-ai/dsh-api-session-controller/README.md:48`）。因此以日志中是否存在 `turn/start` 作为权威判定。
+- 用户报告的活跃会话「DSH Task Inbox 插件搭建」当时被标成空白，与 `eventCount` 缺失被当作 0 的路径一致；修复后该场景由日志中的 `turn/start` 判为 `non-blank`（单元测试用 live session + `eventCount: undefined` + `turn/start` 复现）。
+
+### 2. 修复设计（三态）
+
+| 状态 | 判定 | 候选行为 |
+|---|---|---|
+| `blank` | 已读取日志且未发现 `turn/start`（或无事件）；`eventCount === 0` 作为快速确认 | 不提供复用/Fork；原因 `blank_session` |
+| `non-blank` | 日志中读到 `turn/start`（无论 `eventCount` 是否存在、live 或 cold） | 提供复用/Fork 候选；Fork 仍提示需 Host 校验「已完成轮次」 |
+| `unknown` | 无法 `open`/`read`、没有 `open` 能力，或扫描 5000 个事件仍无决定性证据 | **保守排除**；原因 `session_state_unknown`；不伪装成空白、不宣称可执行 |
+
+实现（`src/host/execution-context.ts`）：
+- `BlankState = 'blank' | 'non-blank' | 'unknown'`；`ExecutionSession.blankState` 替代原 `blank: boolean`。
+- `detectSessionBlankState()`：`eventCount === 0` → `blank`；否则 `open(id,'read')` + 分页 `read(offset, 200)`，找到 `turn/start` → `non-blank`，读完无 turn → `blank`；任何读取失败 → `unknown`；始终关闭 read handle。
+- `assembleExecutionContext()` 只接受 `blankStates` map；缺失状态按 `unknown` 处理。
+- Client：`blankState` 三态文案（blank / state unknown）；对 `unknown` 展示保守排除数量与说明；`suitableForReuse/Fork` 仅对 `non-blank` 为 true。
+
+### 3. 测试
+
+`test/execution-context.test.mjs` 覆盖：`eventCount` 0 / 正数 / undefined；live 与 cold；有 `turn/start` 与无 `turn/start`；日志分页（450 事件）；`open` 失败、`read` 失败、缺少 `open` 能力；assemble 的缺失状态保守化；策略校验对 `unknown` 的拒绝。全套 `pnpm build` / `typecheck` / `check` / `test` 通过，**77/77**。
+
+### 4. 边界
+
+本次修复仍为只读预览：不调用 `@Remote`、不创建/恢复 Agent、不调用 `plugin_manager`、不修改 Profile / Workspace / Session。
