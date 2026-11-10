@@ -388,3 +388,54 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - Client 模块声明 `dsh.client.inject: ["@deepseek-ai/dsh-client-ui-layout"]`；`main` 由该包声明，`sidebar.panellist` 由 `@deepseek-ai/dsh-client-ui-sidebar` 声明（两者均在 web-app 中激活，inject 仅用于激活排序，实际注册由 `ctx.slots.inject` 等待声明完成）。
 - Task 01 使用 `ctx.locale.register(ns, locale, dict)` 的**单语言**形式分别注册 `en` / `zh`（与 F 节的对象形式等价，均受支持）；`ctx.locale.bind(ns)` 在渲染时读取当前语言，组件订阅 `ctx.locale.subscribe` 以在切换语言后重绘。
 - 以上实时证据替代 F 节中标注为 ❓ 的 Slot 树、注册选项、Theme token 三类结论；A/B 节中 client 侧签名也已由附.1 实时确认（`sessions.fork`、`uiWorkspace.*`、`layout.selectPanel`）。
+
+---
+
+## 附：Task 02 实现确认（2026-11-10）
+
+本节记录 Task 02 实际采用的存储与 Host/Client 通信方案，以及对应证据与限制。实现源码见 [src/host/domain.ts](../src/host/domain.ts)、[src/host/store.ts](../src/host/store.ts)、[src/host/service.ts](../src/host/service.ts)、[src/host/api.ts](../src/host/api.ts)、[src/host/index.ts](../src/host/index.ts)、[src/client/index.ts](../src/client/index.ts)。
+
+### 1. 插件自有持久化（`ctx.storageDomain`，已确认可用）
+
+- 采用普通 spec 对象直接调用 `ctx.storageDomain.open(spec)`：
+  `{ name: 'task_inbox', version: 1, layout: 'single', tables: { todos: { valueSchema: z.object({...}) } } }`。
+- 名称规则：存储后端的 `UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/`（`pkg:@deepseek-ai/dsh-storage/lib/index.js:80`），因此域名 / 表名使用下划线（`task_inbox` / `todos`），不能用连字符。
+- 不导入 `@deepseek-ai/dsh-storage-domain` 的 `defineDomain` / `domainTable`（已安装包不保证对第三方插件可解析），而是构造同形状 spec；运行时 `open()` 对已存记录调用 `tableSpec.valueSchema.parse(raw)`（`pkg:@deepseek-ai/dsh-storage-domain/lib/index.js:397`），因此使用 `zod@4.4.3`（与 storage-domain 依赖版本一致，见其 `package.json`），无需依赖 `defineDomain` 的加载期校验。
+- 落盘位置：JSON 后端 `root` 为 `$DSH_HOME/storages`，`single` 布局为 `<root>/<unit>.json`（`pkg:@deepseek-ai/dsh-storage-json/README.md:12,36,50,80-90`），即 `$DSH_HOME/storages/task_inbox.json`；缺失文件在首次写入时创建，写入为原子替换。
+- 生命周期：`Domain.close()` 在插件的 `ctx.effect` disposer 中调用；storage-domain 文档明确“调用方拥有 handle”（`pkg:@deepseek-ai/dsh-storage-domain/README.md:58`）。
+- 运行时证据：插件安装后 API 路由可用（401 认证拦截），说明 `apply` 已完成 `storageDomain.open()` 并注册路由；若域打开失败，`apply` 会抛出、路由不会存在。
+
+### 2. Client ↔ Host 通信（同源 HTTP 端点，已确认可用）
+
+- 未使用 `@Remote` / typert 生成协议，而是选择一个**插件专属的同源 HTTP 端点**：
+  - Host：`ctx.webServer.register({ kind: 'exact', path: '/plugins/dsh-task-inbox/api', handler })`（`inspect:host Service.listService(service="webServer")` 的 `register` 契约；`WebRoute` 的 exact/prefix 类型已确认）；
+  - 认证：每个请求调用 `ctx.connection.requestRejection({ headers })`（`inspect:host Service.listService(service="connection")`，文档描述为“Apply Connection's Host/Origin checks and browser authentication to another Web route”），返回 401/403 时直接拒绝；
+  - Client：`fetch('/plugins/dsh-task-inbox/api', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' } })`；浏览器自动携带同源 HttpOnly Cookie。
+- 不使用 Connection 的 `/api` 共享通道（该路径由 API Gateway / Connection 拥有，见 `pkg:@deepseek-ai/dsh-client-connection/README.md:34`），避免与官方 RPC 路由冲突。
+- 运行时证据：未认证 `POST` 实测返回 `401` + `{"ok":false,"error":{"code":"unauthorized",...}}`；GET 返回 405；说明路由已注册且认证栅栏生效。
+
+### 3. 插件内部 API 契约（供后续阶段维护）
+
+| op | 请求 | 成功 data | 说明 |
+|---|---|---|---|
+| `list` | `{op:'list'}` | `{todos: Todo[]}` | 按 `order`、`createdAt`、`id` 排序 |
+| `create` | `{op:'create', title, description?, requestId}` | `{todo}` | `requestId` 用于快速重复提交去重（内存 10 分钟 / 200 条） |
+| `update` | `{op:'update', id, title, description?, requestId}` | `{todo}` | 保留 id/createdAt/status/order，仅更新内容与 updatedAt |
+| `delete` | `{op:'delete', id}` | `{deleted: boolean}` | 幂等，未找到返回 `false` |
+| `move` | `{op:'move', id, direction:'up'|'down'}` | `{todos}` | 相邻交换并重排 0..n-1 |
+
+- 统一信封：成功 `{ok:true,data}`；业务失败 `{ok:false,error:{code,message}}`（HTTP 200，避免 Client 误判成功）；JSON 解析失败 400、超大请求体 413、非 POST 405、未认证 401/403、未预期异常 500。
+- 错误码：`invalid_title`、`invalid_description`、`not_found`、`storage_failed`、`invalid_payload`、`internal_error`、`unauthorized`；Client 按 code 显示本地化文案。
+
+### 4. 风险与限制
+
+- **认证依赖浏览器 Cookie**：该端点只接受已认证的同源浏览器请求；CLI / 外部调用会被 401 拒绝（设计如此）。若 DSH 改为非 loopback 部署、反向代理或更换 Cookie 策略，需要重新验证。
+- **非 `@Remote` 契约**：虽然用了公开的 `webServer` / `connection` 服务，但没有走 API Gateway 的 Peer 访问策略；`requestRejection` 负责信任与认证，但没有按远程 Peer 方法级鉴权（本插件是本地 owner-only 场景）。
+- **域声明硬编码**：域名 `task_inbox`、version 1、`single` 布局、表 `todos` 均写死；升级 schema 时需提升 version 并声明 `compatibleVersions`，否则旧数据会以 `version-mismatch` 拒绝打开。
+- **移动非事务**：上移 / 下移会对多条记录逐条 `put`，中途存储失败可能留下部分已更新的顺序（值仍合法）。
+- **依赖可用性**：`inject: ['webServer','connection','storageDomain']` 为硬依赖；缺少任一服务的 Profile（例如无 Web 载体的 headless Profile）不会激活本插件，这是有意选择（没有传输层就无法服务 Client）。
+
+### 5. 验证状态
+
+- 已执行：`pnpm build` / `pnpm typecheck` / `pnpm check` / `pnpm test`（25/25）；官方 `install_bundle` 安装；未认证路由返回 401 JSON；Loader 行 `enabled: true`、`fiberPhase: active`；`sidebar.panellist` / `main` 注册存在。
+- 未执行：浏览器内的 CRUD 端到端、刷新与 DSH 重启后的数据保留、bundle 禁用/启用的重载测试（用户未批准该 Profile 操作，不绕过审批）。
