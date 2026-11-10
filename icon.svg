@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Task Inbox">
+  <rect width="64" height="64" rx="14" fill="#1f6feb" opacity="0.12"/>
+  <path d="M14 32h8l4 7h12l4-7h8" fill="none" stroke="#1f6feb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M14 32V20.5a4.5 4.5 0 0 1 4.5-4.5h27A4.5 4.5 0 0 1 50 20.5V32" fill="none" stroke="#1f6feb" stroke-width="3" stroke-linecap="round"/>
+  <path d="M14 32v11.5A4.5 4.5 0 0 0 18.5 48h27A4.5 4.5 0 0 0 50 43.5V32" fill="none" stroke="#1f6feb" stroke-width="3" stroke-linecap="round"/>
+  <path d="m27 27.5 3.5 3.5 7-7.5" fill="none" stroke="#1f6feb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

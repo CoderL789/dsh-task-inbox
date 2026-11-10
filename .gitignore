@@ -1,0 +1,7 @@
+node_modules/
+*.tsbuildinfo
+.pnpm-store/
+
+# Local scratch and harness spill files.
+.tmp/
+*.log

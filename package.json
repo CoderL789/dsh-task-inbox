@@ -1,0 +1,55 @@
+{
+  "name": "dsh-task-inbox",
+  "version": "0.1.0",
+  "description": "Session-decoupled task inbox for DeepSeek Harness: collect todos, then dispatch them to a workspace session for an Agent to execute.",
+  "license": "MIT",
+  "author": "DSH Task Inbox contributors",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "todo",
+    "inbox",
+    "task"
+  ],
+  "exports": {
+    ".": "./lib/host/index.js",
+    "./client": "./lib/client/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "locale/**/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "docs/**/*.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "node --check lib/host/index.js && node --check lib/client/index.js",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}

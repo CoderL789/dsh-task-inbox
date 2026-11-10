@@ -1,0 +1,7 @@
+# Bundle patch for the DSH Task Inbox plugin.
+#
+# One Host row activates the package root. The Client half is declared in
+# package.json `dsh.client` and served by the Harness Client module loader.
+- insert:
+    - id: task-inbox
+      name: dsh-task-inbox

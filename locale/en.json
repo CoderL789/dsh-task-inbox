@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Inbox",
+    "description": "Collect todos without executing them, then dispatch them to a workspace session for an Agent to execute."
+  }
+}
