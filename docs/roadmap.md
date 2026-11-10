@@ -14,8 +14,8 @@
 | --- | --- | --- | --- |
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
-| Task 03A | 执行前配置与会话能力验证（仅预览） | **实现完成（待用户验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | 待开始 | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **架构验证完成（待确认方案）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
 | Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
@@ -103,7 +103,7 @@
 
 ## Task 03A：执行前配置与会话能力验证
 
-**状态：实现完成（待用户验收）**
+**状态：完成（已通过代码审查与核心 UI 验收）**
 
 **目标**：让用户在执行前选择执行上下文（Workspace + 会话策略 + 来源 Session），并验证 DSH 现有 API 能否支撑三种策略；本阶段**只预览与校验，不创建 / 恢复 / Fork 真实 Session，不向 Agent 派发 Prompt**。
 
@@ -141,15 +141,26 @@
 
 ## Task 03B：执行派发
 
-**状态：待开始**
+**状态：架构验证完成（等待确认实现方案；尚未实现真实派发）**
+
+**核心结论**：**可以**让 Client 通过 DSH 正常的授权 Remote 链路完成创建 / Fork / Prompt 派发，不需要第三方 Host 插件直接调用 `sessionController.*`（`@Remote`）。
+
+**架构验证要点**（详见 [task-03b-design.md](task-03b-design.md) 与 [api-notes.md](api-notes.md)）：
+
+- Client `ctx.sessions.create()`、`ctx.sessions.fork()`、`SessionFace.prompt(content, mode, signal, requestId)` 由 Session Controller Client 端实现并经 Connection RPC → API Gateway → Peer 鉴权；浏览器页面为 owner Peer，owner 不被 policy 检查，非 owner 仍会被服务端拒绝（不绕过鉴权）。
+- 三条策略统一采用：Host 记录 intent + 重新校验 → Client 授权 Remote create/fork → retain → prompt(requestId) → Host 记录 result/复核；Host 不调用 @Remote。
+- Host 公开 `agents.get/resume + followup` 仅作为降级方案（无 Peer 授权链、无 requestId 幂等、writer lock 风险）；Host 直调 `@Remote` 在“不绕过 Peer 鉴权”约束下**不采用**。
+- 恢复：Host 持久化 `execution` 记录（v3 迁移保留 v2 数据）；重启后用只读 `sessionPersistence.open(id,'read')` 判断 requestId 是否已落成消息；Fork 无幂等键，未知结果不自动重试、交用户确认；Prompt 以 requestId 幂等兜底。
+- 未命名 Session 显示：`title → 短ID · ISO 创建时间 → 短ID`（`describeSessionChoice`，含纯函数测试）。
+- 派发前 Host 重新校验 Todo / Workspace / Source/Target Session（`validateDispatchPreconditions`，含纯函数测试），不信任 Task 03A 预览快照；archive 状态与「已完成轮次」由真实 Remote prompt 最终裁决。
 
 **目标**：按用户选择的策略真正派发 Todo 给 Agent，并持久化 Todo ↔ Workspace / Session 的执行关联；完整状态机与历史在 Task 04。
 
-**交付物**：
+**交付物（待实现）**：
 
-- 派发实现：新建（`sessionController.create`）、复用（`agents.get/resume` + `followup`）、Fork（`sessionController.fork`）；详见 [task-03b-design.md](task-03b-design.md)；
-- 执行意图 / 关联记录持久化（domain v3 迁移，保留 v2 数据）；
-- 幂等 requestId、接受确认、失败与重启恢复；
+- Client 授权链路派发：`ctx.sessions.create/fork` + `retain` + `SessionFace.prompt`；
+- Host `execution-intent` / `execution-result` 重新校验与记录；domain v3 `executions` 表（保留 v2 数据）；
+- 幂等 requestId、接受确认、失败与重启恢复（Fork 未知结果人工确认）；
 - 用户明确确认后才派发；Todo 原内容不因失败丢失；
 - UI 接通“确认执行”，区分预览与真实派发。
 
@@ -164,11 +175,12 @@
 
 **风险**：
 
-- `sessionController.create/fork/prompt` 是 `@Remote` 面，非第三方稳定契约，Host 进程内调用会绕过 Peer 访问策略；需评估是否接受该风险或等待官方 Host API；
-- 复用路径的 writer lock / AgentHandle 生命周期（超时、卸载释放）需实测；
-- Fork 的标题递增、迁移许可、冷源 Fork 的 Agent 创建路径需验证；
-- 权限与审批边界：派发会触发 Agent 行为，必须遵守 DSH 权限模型；
-- 执行关联记录需要 domain v3 迁移，必须保留 v2 待办数据。
+- Client `sessions.create/list` 未出现在 inspect 方法目录，仅见 `ISessions` 类型与构建实现 → 属“随版本发布的 Client 契约”，需版本回归；
+- `retain` 打开历史的成本与失败处理；页面刷新/关闭中断协调（靠 Host 记录恢复）；
+- Fork 无幂等键，未知结果需人工确认；create 命名复用可能返回不同 id（以实际返回为准）；
+- 公开 Host API 无法确认 archive/completed-turn，最终由 Remote prompt 裁决；
+- 执行关联记录需要 domain v3 迁移，必须保留 v2 待办数据；
+- 权限：非 owner Peer 会被拒绝，本插件面向 owner 页面，不绕过。
 
 ---
 
@@ -259,7 +271,10 @@
 | 2026-11-10 | Task 03A 验证：build / typecheck / check / test（67/67）通过；未创建 / Fork / 恢复真实会话，未调用 plugin_manager | 已完成 |
 | 2026-11-10 | Task 03A 审查修复：Session 空白状态改为三态（确认空白/确认非空白/无法确认），通过只读日志 `turn/start` 判定；无法确认时保守排除；77/77 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 技术方案文档（三种策略 API、Session 产生/恢复/Fork、幂等与失败恢复） | 已完成 |
-| 2026-11-10 | Task 03A 浏览器交互与中英文 / 明暗主题人工验收 | 待完成（由用户执行） |
+| 2026-11-10 | Task 03A 浏览器交互与中英文 / 明暗主题人工验收 | 已完成（核心 UI 验收通过） |
+| 2026-11-10 | Task 03B 架构验证：确认 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 走正常 Remote/Peer 授权链路；Host 不直调 @Remote；输出推荐调用链、协调协议与风险 | 已完成 |
+| 2026-11-10 | Task 03B 架构验证产物：`validateDispatchPreconditions` / `describeSessionChoice` 纯函数 + 测试；设计文档与 api-notes 更新；build/typecheck/check/test（83/83） | 已完成 |
+| 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 
 ## 已知开放问题
 
@@ -280,5 +295,9 @@
 | 13 | 存储写入结果不确定（可能在 rename 之后失败） | 可能误报失败/成功或基于过期内存继续写 | **已修复**：区分确定/不确定，关闭重开存储域后按磁盘状态判定；无法恢复时进入保护态要求重启；有恢复与保护态测试 |
 | 14 | Task 03B 派发主路径依赖 `@Remote`（sessionController.create/fork/prompt） | 非第三方稳定契约；Host 内调用会绕过 Peer 访问策略 | Task 03B 前评估是否接受风险或改用/申请受支持 Host API；见 task-03b-design.md |
 | 15 | Task 03A 预览的信息限制 | 冷会话无标题；归档状态与「已完成轮次」无法在预览阶段确认 | UI 以 warning 明确提示，最终由派发时 Host 校验；会话空白状态已改为三态并通过只读日志确认 |
+| 16 | Task 03B 方案等待确认 | 是否接受 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 的“随版本发布的 Client 契约” | 架构验证完成并文档化；见 task-03b-design.md「待确认问题」 |
+| 17 | Client `sessions.create/list` 未出现在 inspect 方法目录 | 可能为未文档化 Client 契约，升级可能变化 | 依赖点集中封装；Task 03B 前做版本回归；失败时降级“派发不可用” |
+| 18 | Fork 无幂等键 | 未知结果可能重复 child | 不自动重试；只读列出候选由用户确认；记录 unknown |
+| 19 | 执行记录需要 domain v3 迁移 | v2 待办数据必须保留 | Task 03B 使用 compatibleVersions + 迁移测试；未开始实现 |
 
 注：当前阶段未发布到 npm；安装均以本地插件包绝对路径为准。仓库地址：<https://github.com/CoderL789/dsh-task-inbox>。

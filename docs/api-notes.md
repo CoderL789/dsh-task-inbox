@@ -607,3 +607,59 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 ### 4. 边界
 
 本次修复仍为只读预览：不调用 `@Remote`、不创建/恢复 Agent、不调用 `plugin_manager`、不修改 Profile / Workspace / Session。
+
+---
+
+## 附：Task 03B 架构验证（2026-11-10）
+
+### 1. 核心结论
+
+**可以**：Client 通过 DSH 正常的认证 Remote 链路即可完成会话创建 / Fork / Prompt 派发，不需要第三方 Host 插件直接调用 `sessionController.*`（`@Remote`）。
+
+### 2. 证据（inspect + 已安装构建产物）
+
+| 能力 | 契约 | 证据 |
+|---|---|---|
+| Client 创建会话 | `ISessions.create(opts?: { workspaceId?, cwd?, sessionId?, agentPreset? }): Promise<SessionId>` | `inspect:client Service.listService(service="sessions")` referencedTypes；构建 `pkg:@deepseek-ai/dsh-api-session-controller/lib/client.js:3988`（`ClientSessions.create`）、`:3336`（`SessionManager.create` → `this.remote.session.create`）；成功后同步合并 catalog 占位行，**不导航** |
+| Client Fork | `ISessions.fork({ sessionId, atSeq?, increaseTitle?, onCreated?, allowMigration? }): Promise<SessionId>` | 同上 referencedTypes；`lib/client.js:4007`、`:3385`（`this.remote.session.fork`）；不导航；`uiWorkspace.forkSession` 仅加 `increaseTitle:true`（`dsh-client-ui-workspace/lib/client.js:1494`） |
+| Client Prompt | `ISession.prompt(content, mode: 'queue'\|'steer', signal?, requestId?): Promise<RemoteResult<{accepted:true}>>` | referencedTypes `ISession`；`lib/client.js:2334` → `this.remote.session.prompt({ requestId, sessionId, mode, content, clientTimeZone })`；服务端 requestId 幂等 |
+| 取得 SessionFace | `ctx.sessions.retain(target,{source})` → `reference.ready` → `binding.session` | `lib/client.js:3858`；retain 会打开历史；`source: 'controllerOperation'` |
+| 刷新会话目录 | `ctx.sessions.refresh()` | referencedTypes `ISessions.refresh`；复用前确保目标在 Client 目录 |
+| 导航型备选 | `uiWorkspace.startSession` 返回 void 且导航，`options.prompt` 只写草稿不发送；`connectWorkspace` 内部即 `sessions.create`（不导航）；`forkSession` 不导航 | `dsh-client-ui-workspace/lib/client.js:1399-1418,1494-1530` |
+
+注意：Client inspect 的方法目录没有列出 `create/list`，但同一 inspect 返回的 `ISessions` 类型与构建实现均存在——应视为“随版本发布的 Client 契约”，Task 03B 需做版本回归。
+
+### 3. 权限与授权链路
+
+- 浏览器页面是 **owner Peer**；`pkg:@deepseek-ai/dsh-api-remote-access/README.md:27` 明确 “The owner (`{ kind: 'owner' }`) is never checked”，非 owner 调用仍受 policy 约束；页面注入 baseline 对 owner 恒允许（README:68）。
+- `ctx.sessions.*` / `SessionFace.prompt` 与宿主 UI 的会话操作走同一条 Connection RPC → API Gateway → Peer 鉴权链路；服务端仍会以 `remote-access/denied` 拒绝非授权调用。
+- 因此该方案**不绕过** Peer 鉴权；Host 插件不应再以内进程方式直调 `@Remote`。
+
+### 4. 推荐调用链与协调
+
+- **new**：Host `execution-intent` 重新校验并写入 `prepared` 记录（含 Client 生成的 `requestId` 与 `proposedSessionId`）→ Client `sessions.create({ workspaceId, sessionId: proposedSessionId })` → `retain` → `session.prompt(..., requestId)` → Host `execution-result` 复核 Todo/Workspace/Target Session 后记录 `accepted`。
+- **reuse**：intent（校验非空白、归属）→ `ctx.sessions.refresh()` → retain(source) → prompt → result。
+- **fork**：intent → `sessions.fork({ sessionId, allowMigration? })` → retain(child) → prompt → result；Fork 无 requestId 幂等，未知结果**不自动重试**，由 Host 列出候选交用户确认。
+- **恢复**：Host 记录 `prepared/dispatching/accepted/failed/unknown`；重启/页面重开后用 public `sessionPersistence.open(id,'read')` 只读扫描目标日志判断 requestId 是否已落成 `user/message`；无法判断保持 `unknown`，不自动重派。
+- **只确认一次**：UI confirm 后锁定；Host 对同一 `requestId` 的 intent 幂等（同 payload 返回原记录，不同 payload 冲突）；Prompt 以 Remote 的 requestId 幂等兜底。
+
+### 5. Host 派发前重新校验与未命名会话显示
+
+- Task 03A 的预览快照不被信任：`execution-intent` / `execution-result` 两阶段重新读取 Todo、Workspace（`status()`）、Source/Target Session（存在、归属、只读日志空白判定），规则固化为纯函数 `src/host/dispatch-plan.ts` 的 `validateDispatchPreconditions()`，并由 `test/dispatch-plan.test.mjs` 覆盖。
+- 未命名 Session 使用 `title → 短ID · ISO 创建时间 → 短ID` 的降级顺序（`describeSessionChoice()`，同一模块/测试），避免多个未命名会话显示为同一个 “Untitled”。
+- 公开 Host API 无法确认 archive 状态与「已完成轮次」；这些由真实 `session.prompt` 时 Host 的最终规则裁决，失败错误码原样记录。
+
+### 6. 可行性结论
+
+| 策略 | 推荐路径 | 结论 |
+|---|---|---|
+| 新建 | Client `ctx.sessions.create` + `SessionFace.prompt` | ✅ 可行，走正常 Remote 授权链路 |
+| 复用 | Client `ctx.sessions.retain` + `SessionFace.prompt` | ✅ 可行；复用前刷新 Client 目录 |
+| Fork | Client `ctx.sessions.fork`（或 `uiWorkspace.forkSession`）+ `SessionFace.prompt` | ✅ 可行；Fork 无幂等，未知结果需人工确认 |
+| Host `agents.resume/get` + followup | public Host API | ⚠️ 仅降级：无 Peer 授权链、无 requestId 幂等、writer lock/AgentHandle 生命周期风险 |
+| Host 直调 `sessionController.*` | `@Remote` | 🚫 在“不绕过 Peer 鉴权”的约束下不采用 |
+
+### 7. 本次验证状态
+
+- 仅只读 inspect、源码分析与纯函数测试；`pnpm build` / `typecheck` / `check` / `test` 通过，**83/83**。
+- 未创建 / Fork / 恢复真实 Session，未发送 Prompt，未调用 `plugin_manager`，未修改 Profile / Workspace / Session；未提交/推送；未开始 Task 03B 实现。
