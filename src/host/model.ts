@@ -94,6 +94,14 @@ export function nextOrder(todos: readonly Todo[]): number {
   return max + 1
 }
 
+/**
+ * Assign `order` from display position (0..n-1) without touching timestamps or
+ * content. Used before every whole-state write so stored orders stay canonical.
+ */
+export function normalizeOrder(todos: readonly Todo[]): Todo[] {
+  return todos.map((todo, index) => (todo.order === index ? todo : { ...todo, order: index }))
+}
+
 export interface ReorderPlan {
   /** The complete list in final display order. */
   todos: Todo[]

@@ -34,11 +34,11 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 当前为 **Task 02：待办管理与持久化**。已具备：
 
-- 独立插件包（包名 `dsh-task-inbox`，版本 `0.2.0`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
-- **Host 半区**：通过 `ctx.storageDomain` 打开插件独立存储域 `task_inbox`（JSON 后端、单文件布局），经 `DomainTodoRepository` → `TodoService` 提供校验、CRUD、排序与幂等创建；通过一个受认证的同源 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 暴露给 Client；
+- 独立插件包（包名 `dsh-task-inbox`，版本 `0.2.1`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
+- **Host 半区**：通过 `ctx.storageDomain` 打开插件独立存储域 `task_inbox`（version 2、JSON 后端、单文件布局）。v2 把**整份有序待办列表存为单个 global 状态文档**，每个变更（新建 / 编辑 / 删除 / 排序）都是一次原子写；v1 的逐条记录表会在插件启动时自动迁移（一次性、保留原数据、失败则中止激活而不是显示空列表）。经 `TodoService` 提供校验、CRUD、排序、并发串行化与幂等创建；通过一个受认证的同源 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 暴露给 Client；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；新建 / 编辑表单、列表（标题、描述、创建时间）、删除二次确认、上移 / 下移、加载中 / 成功 / 失败反馈；中文与英文文案；明暗主题适配；
 - 数据模型：`id`、`title`、`description`、`status`（本阶段仅 `todo`）、`createdAt`、`updatedAt`、`order`；
-- 25 个 Node 单元测试覆盖校验、排序、CRUD、幂等、存储失败映射与 API 处理器。
+- 43 个 Node 单元测试覆盖校验、排序、原子 CRUD、并发与幂等、v1→v2 迁移、存储失败映射、HTTP 请求分块与字节上限。
 
 | 能力 | Task 02 | 后续 |
 | --- | --- | --- |
@@ -69,7 +69,8 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 ## 数据、备份与卸载
 
-- **数据位置**：`$DSH_HOME/storages/task_inbox.json`（JSON 后端 root 为 `$DSH_HOME/storages`，插件存储域名为 `task_inbox`、布局为 `single`）。Windows 测试环境为 `C:\Users\<user>\.dsh\storages\task_inbox.json`。文件在第一次写入待办时创建，内容为可读的格式化 JSON，每次写入通过原子替换落盘。
+- **数据位置**：`$DSH_HOME/storages/task_inbox.json`（JSON 后端 root 为 `$DSH_HOME/storages`，插件存储域名为 `task_inbox`、布局为 `single`）。Windows 测试环境为 `C:\Users\<user>\.dsh\storages\task_inbox.json`。文件内容为可读的格式化 JSON。
+- **原子性与迁移**：v2 数据格式把整条有序列表保存在域 global 状态里，任何一次新建 / 编辑 / 删除 / 排序都通过**一次** `global.set` 落盘（底层为临时文件 + fsync + 原子 rename），因此排序不会出现“部分提交”；写入失败时内存与磁盘都保持原状态。旧版 v1 的逐条记录会在插件启动时**一次性迁移**为 v2：迁移写入成功后才标记完成并清理旧记录，迁移写入失败会中止插件激活（不会用空列表覆盖旧数据）。迁移失败只记录日志、不会再次迁移已成功迁移的数据。
 - **备份**：在 DSH 空闲或已停止时复制上述文件即可；恢复时停止 DSH、用备份覆盖该文件，再启动 DSH。
 - **卸载保留策略**：通过官方插件管理器 `remove_bundle` 卸载只移除插件代码与注册，**不会删除** `task_inbox.json`；重新安装后待办仍在。若需彻底清除数据，请先停止 DSH，再手动删除该文件。
 - 插件不会修改 Profile 配置，也不会读写其他插件的数据。
@@ -101,7 +102,7 @@ pnpm install        # 安装依赖（若公司 registry 对 tarball 返回 401�
 pnpm build          # TypeScript 源码 → lib/，供 DSH 加载
 pnpm typecheck      # 仅类型检查（tsc --noEmit），不产出文件
 pnpm check          # node --check 校验 lib/ 下产物的 JS 语法
-pnpm test           # node:test 运行 Host 单元测试（校验 / 排序 / CRUD / API）
+pnpm test           # node:test：校验 / 排序 / 原子 CRUD / 并发 / 迁移 / API
 ```
 
 说明：
@@ -163,8 +164,10 @@ dsh-task-inbox/
 - 本阶段不提供「标记完成」，待办状态固定为 `todo`；
 - 不提供 Agent 执行、工作区选择、会话创建 / 复用 / Fork（Task 03）；
 - 没有跨标签页 / 多窗口实时同步：列表在页面挂载时加载，其他窗口的修改需刷新后可见；
-- 上移 / 下移按记录逐条落盘，若存储中途失败可能留下部分已更新的顺序（顺序值仍合法，可重试）；
+- 每次变更重写整份有序列表（适合个人待办量级）；列表极大时写放大明显；
+- 并发串行化在 Host 进程内生效；同一 `$DSH_HOME` 同时运行多个 DSH 进程并写同一存储域不在支持范围内；
 - 创建去重（`requestId`）仅在内存中保留 10 分钟，用于抵御快速重复提交，DSH 重启后失效；
+- 旧版 v1 数据的迁移在插件下次加载时执行；迁移写入失败会让插件激活失败并记录错误（旧数据保持在文件中），需人工排查；
 - 暂无自动化 UI 测试；视觉与完整交互需人工验收。
 
 ## 贡献

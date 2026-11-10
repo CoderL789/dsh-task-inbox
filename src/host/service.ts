@@ -1,12 +1,23 @@
 /**
- * Todo CRUD service: validation, timestamps, ordering, idempotent creates.
+ * Todo CRUD service: validation, timestamps, ordering, idempotent creates,
+ * and atomic serialized mutations.
  *
- * The service depends only on a repository interface and a clock/id generator,
- * never on DSH services, so its behavior is unit-testable with fakes.
+ * Concurrency model (Task 02 review fix):
+ * - Every mutation runs through one in-process promise queue, so read-modify-
+ *   write sequences never interleave: two concurrent creates cannot pick the
+ *   same order value, and a move cannot race an update/delete.
+ * - Each mutation persists by replacing the complete ordered list with ONE
+ *   `repository.write()` call (a single atomic global write). A failed write
+ *   leaves the previous state untouched — no partial reorder is possible.
+ * - Create idempotency (`requestId`) is checked inside the queue, after the
+ *   previous create committed, so concurrent duplicates return the same todo.
+ *
+ * The service depends only on the state repository interface and a clock/id
+ * generator, never on DSH services, so its behavior is unit-testable.
  */
 import {
+  normalizeOrder,
   normalizeTodoInput,
-  nextOrder,
   planMove,
   sortTodos,
   TODO_STATUS_TODO,
@@ -23,15 +34,14 @@ export interface IdGenerator {
   next(): string
 }
 
-export interface TodoRepositoryLike {
-  all(): Todo[]
-  get(id: string): Todo | undefined
-  put(todo: Todo): Promise<void>
-  delete(id: string): Promise<boolean>
+/** Whole-list persistence contract (see `DomainTodoRepository`). */
+export interface TodoStateRepositoryLike {
+  read(): Todo[]
+  write(todos: readonly Todo[]): Promise<void>
 }
 
 export interface TodoServiceOptions {
-  repository: TodoRepositoryLike
+  repository: TodoStateRepositoryLike
   clock: Clock
   ids: IdGenerator
 }
@@ -72,91 +82,125 @@ const RECENT_CREATES_LIMIT = 200
 export class TodoService {
   private readonly options: TodoServiceOptions
   private readonly recentCreates = new Map<string, { todo: Todo; at: number }>()
+  /** Tail of the mutation queue; every link settles so one failure cannot stall later work. */
+  private mutationTail: Promise<unknown> = Promise.resolve()
 
   constructor(options: TodoServiceOptions) {
     this.options = options
   }
 
   list(): Todo[] {
-    return sortTodos(this.options.repository.all())
+    return sortTodos(this.options.repository.read())
   }
 
-  async create(input: CreateTodoInput): Promise<Todo> {
-    const normalized = normalizeTodoInput(input)
-    if (!normalized.ok) {
-      throw new TodoServiceError(normalized.code, normalized.message)
-    }
-
-    const requestId = typeof input.requestId === 'string' ? input.requestId : ''
-    if (requestId !== '') {
-      const cached = this.recentCreates.get(requestId)
-      if (cached !== undefined) {
-        if (this.options.clock.epochMs() - cached.at <= REQUEST_DEDUPE_MS) return cached.todo
-        this.recentCreates.delete(requestId)
+  create(input: CreateTodoInput): Promise<Todo> {
+    return this.exclusive(async () => {
+      const normalized = normalizeTodoInput(input)
+      if (!normalized.ok) {
+        throw new TodoServiceError(normalized.code, normalized.message)
       }
-    }
 
-    const now = this.options.clock.isoNow()
-    const order = nextOrder(this.options.repository.all())
-    const todo: Todo = {
-      id: this.options.ids.next(),
-      title: normalized.value.title,
-      description: normalized.value.description,
-      status: TODO_STATUS_TODO,
-      createdAt: now,
-      updatedAt: now,
-      order,
-    }
+      const current = sortTodos(this.options.repository.read())
+      const requestId = typeof input.requestId === 'string' ? input.requestId : ''
 
-    await this.durable(() => this.options.repository.put(todo))
-    if (requestId !== '') this.rememberCreate(requestId, todo)
-    return todo
+      if (requestId !== '') {
+        const cached = this.recentCreates.get(requestId)
+        if (cached !== undefined) {
+          const stillExists = current.some((todo) => todo.id === cached.todo.id)
+          if (stillExists && this.options.clock.epochMs() - cached.at <= REQUEST_DEDUPE_MS) {
+            return cached.todo
+          }
+          this.recentCreates.delete(requestId)
+        }
+      }
+
+      const now = this.options.clock.isoNow()
+      const todo: Todo = {
+        id: this.options.ids.next(),
+        title: normalized.value.title,
+        description: normalized.value.description,
+        status: TODO_STATUS_TODO,
+        createdAt: now,
+        updatedAt: now,
+        order: current.length,
+      }
+      const next = normalizeOrder([...current, todo])
+      await this.durable(() => this.options.repository.write(next))
+      if (requestId !== '') this.rememberCreate(requestId, todo)
+      return todo
+    })
   }
 
-  async update(input: UpdateTodoInput): Promise<Todo> {
-    const id = typeof input.id === 'string' ? input.id : ''
-    const existing = this.options.repository.get(id)
-    if (existing === undefined) {
-      throw new TodoServiceError('not_found', 'Task was not found.')
-    }
+  update(input: UpdateTodoInput): Promise<Todo> {
+    return this.exclusive(async () => {
+      const id = typeof input.id === 'string' ? input.id : ''
+      const current = sortTodos(this.options.repository.read())
+      const index = current.findIndex((todo) => todo.id === id)
+      if (index === -1) {
+        throw new TodoServiceError('not_found', 'Task was not found.')
+      }
 
-    const normalized = normalizeTodoInput(input)
-    if (!normalized.ok) {
-      throw new TodoServiceError(normalized.code, normalized.message)
-    }
+      const normalized = normalizeTodoInput(input)
+      if (!normalized.ok) {
+        throw new TodoServiceError(normalized.code, normalized.message)
+      }
 
-    const todo: Todo = {
-      ...existing,
-      title: normalized.value.title,
-      description: normalized.value.description,
-      updatedAt: this.options.clock.isoNow(),
-    }
-    await this.durable(() => this.options.repository.put(todo))
-    return todo
+      const todo: Todo = {
+        ...current[index],
+        title: normalized.value.title,
+        description: normalized.value.description,
+        updatedAt: this.options.clock.isoNow(),
+      }
+      const next = normalizeOrder(current.slice(0, index).concat(todo, current.slice(index + 1)))
+      await this.durable(() => this.options.repository.write(next))
+      return todo
+    })
   }
 
-  async delete(id: unknown): Promise<boolean> {
-    const todoId = typeof id === 'string' ? id : ''
-    if (todoId === '') return false
-    return this.durable(() => this.options.repository.delete(todoId))
+  delete(id: unknown): Promise<boolean> {
+    return this.exclusive(async () => {
+      const todoId = typeof id === 'string' ? id : ''
+      if (todoId === '') return false
+      const current = sortTodos(this.options.repository.read())
+      const next = current.filter((todo) => todo.id !== todoId)
+      if (next.length === current.length) return false
+      await this.durable(() => this.options.repository.write(normalizeOrder(next)))
+      return true
+    })
   }
 
-  async move(id: unknown, direction: MoveDirection): Promise<Todo[]> {
-    const todoId = typeof id === 'string' ? id : ''
-    const plan = planMove(
-      this.options.repository.all(),
-      todoId,
-      direction,
-      this.options.clock.isoNow(),
+  move(id: unknown, direction: MoveDirection): Promise<Todo[]> {
+    return this.exclusive(async () => {
+      const todoId = typeof id === 'string' ? id : ''
+      const plan = planMove(
+        this.options.repository.read(),
+        todoId,
+        direction,
+        this.options.clock.isoNow(),
+      )
+      if (plan === null) {
+        throw new TodoServiceError('not_found', 'Task was not found.')
+      }
+
+      const next = normalizeOrder(plan.todos)
+      if (plan.changed.length > 0) {
+        await this.durable(() => this.options.repository.write(next))
+      }
+      return next
+    })
+  }
+
+  /**
+   * Run one mutation at the tail of the queue. The queue never rejects, so a
+   * failed mutation does not block later operations.
+   */
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationTail.then(operation, operation)
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined,
     )
-    if (plan === null) {
-      throw new TodoServiceError('not_found', 'Task was not found.')
-    }
-
-    for (const todo of plan.changed) {
-      await this.durable(() => this.options.repository.put(todo))
-    }
-    return plan.todos
+    return result
   }
 
   private async durable<T>(operation: () => Promise<T>): Promise<T> {

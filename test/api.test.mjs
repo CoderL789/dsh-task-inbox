@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   API_PATH,
+  MAX_BODY_BYTES,
   createApiHandler,
   handleOperation,
   parseApiPayload,
@@ -11,26 +12,28 @@ import {
 import { TodoService } from '../lib/host/service.js'
 
 function makeService() {
-  const records = new Map()
+  const repository = {
+    todos: [],
+    writeCalls: 0,
+    read() {
+      return [...this.todos]
+    },
+    async write(todos) {
+      this.writeCalls += 1
+      this.todos = todos.map((todo) => ({ ...todo }))
+    },
+  }
   const clock = {
     isoNow: () => '2026-11-10T09:00:00.000Z',
     epochMs: () => Date.UTC(2026, 10, 10, 9, 0, 0),
   }
   let counter = 0
-  const repository = {
-    all: () => [...records.values()],
-    get: (id) => records.get(id),
-    put: async (todo) => {
-      records.set(todo.id, todo)
-    },
-    delete: async (id) => records.delete(id),
-  }
   const service = new TodoService({
     repository,
     clock,
     ids: { next: () => `todo-${++counter}` },
   })
-  return { service, records }
+  return { service, repository }
 }
 
 test('parseApiPayload rejects malformed envelopes and operations', () => {
@@ -122,9 +125,10 @@ function makeResponse() {
 }
 
 async function invoke(handler, request, response, body) {
+  const chunks = Array.isArray(body) ? body : body === '' ? [] : [body]
   const promise = handler(request, response)
   await Promise.resolve()
-  if (body !== '') request.emit('data', body)
+  for (const chunk of chunks) request.emit('data', chunk)
   request.emit('end')
   await promise
 }
@@ -173,6 +177,65 @@ test('api handler enforces method, path, JSON and payload errors', async () => {
 
   const oversized = await call(handler, makeRequest({ body: 'x'.repeat(300 * 1024) }))
   assert.equal(oversized.status, 413)
+})
+
+test('api handler decodes UTF-8 split across request chunks', async () => {
+  const { service } = makeService()
+  const handler = createApiHandler({ service, authorize: () => undefined })
+
+  const body = JSON.stringify({
+    op: 'create',
+    title: '中文标题测试',
+    description: '分块传输细节',
+    requestId: 'r-zh',
+  })
+  const bytes = Buffer.from(body, 'utf8')
+  const marker = Buffer.from('中', 'utf8')
+  const start = bytes.indexOf(marker)
+  assert.notEqual(start, -1)
+  // Split through the middle of the three-byte "中" sequence, then again
+  // through the next multi-byte character.
+  const chunks = [
+    bytes.subarray(0, start + 1),
+    bytes.subarray(start + 1, start + 2),
+    bytes.subarray(start + 2),
+  ]
+
+  const result = await call(handler, makeRequest({ body: chunks }))
+  assert.equal(result.status, 200)
+  const parsed = JSON.parse(result.body)
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.data.todo.title, '中文标题测试')
+  assert.equal(parsed.data.todo.description, '分块传输细节')
+})
+
+test('request body limit counts bytes, not UTF-16 string length', async () => {
+  const { service } = makeService()
+  const handler = createApiHandler({ service, authorize: () => undefined })
+
+  const title = '中'.repeat(90_000) // 270 000 UTF-8 bytes, 90 000 JS chars
+  const body = JSON.stringify({ op: 'create', title, requestId: 'r-big' })
+  assert.equal(body.length < MAX_BODY_BYTES, true)
+  assert.equal(Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES, true)
+
+  const result = await call(handler, makeRequest({ body: Buffer.from(body, 'utf8') }))
+  assert.equal(result.status, 413)
+  assert.equal(JSON.parse(result.body).error.message, 'Request body is too large.')
+})
+
+test('request body limit triggers while streaming oversized chunks', async () => {
+  const { service } = makeService()
+  const handler = createApiHandler({ service, authorize: () => undefined })
+
+  const body = Buffer.from(JSON.stringify({ op: 'create', title: '中'.repeat(90_000) }), 'utf8')
+  const chunkSize = 32 * 1024
+  const chunks = []
+  for (let offset = 0; offset < body.length; offset += chunkSize) {
+    chunks.push(body.subarray(offset, offset + chunkSize))
+  }
+
+  const result = await call(handler, makeRequest({ body: chunks }))
+  assert.equal(result.status, 413)
 })
 
 test('api handler performs a full create/list round trip', async () => {

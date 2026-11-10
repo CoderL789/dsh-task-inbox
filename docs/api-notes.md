@@ -439,3 +439,40 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 
 - 已执行：`pnpm build` / `pnpm typecheck` / `pnpm check` / `pnpm test`（25/25）；官方 `install_bundle` 安装；未认证路由返回 401 JSON；Loader 行 `enabled: true`、`fiberPhase: active`；`sidebar.panellist` / `main` 注册存在。
 - 未执行：浏览器内的 CRUD 端到端、刷新与 DSH 重启后的数据保留、bundle 禁用/启用的重载测试（用户未批准该 Profile 操作，不绕过审批）。
+
+---
+
+## 附：Task 02 审查修复确认（2026-11-10）
+
+本节记录 P1（排序原子性 / 并发幂等）与 P2（HTTP 请求体）修复所依据的机制与实现，证据来自 `cordis_inspect_query` 契约、已安装包源码与本地测试。
+
+### 1. Storage Domain 的原子写能力（调研结论）
+
+- **没有跨记录事务 / 批量写**：`KvTable` 只有 `put`、`delete`、`deleteMany`、`update`，每次调用在域写链上只产生一次后端操作（`pkg:@deepseek-ai/dsh-storage-domain/lib/index.js:270-305`）；因此“逐条写多个记录”无法做到全成或全不成——这正是旧 `move()` 的问题。
+- **`Domain.global.set(value)` 是单次原子写**：实现为 `await unit.setGlobal(value)` 后才更新内存并 emit（`pkg:@deepseek-ai/dsh-storage-domain/lib/index.js:165-176`），失败时内存不改变。
+- **底层介质本身是原子替换**：JSON 后端 `single` 布局每次写入“临时文件 → fsync → 原子 rename → 目录 fsync”（`pkg:@deepseek-ai/dsh-storage-json/README.md:74-76`）。
+- **结论**：把整份有序列表作为**单个 global 值**持久化，每次业务变更只调用一次 `global.set()`，即可获得“全成或全不成”的排序语义；这是当前 Storage Domain 能提供的最强保证。被否决的替代方案：保留逐条记录 + 单独 order 数组，需要两次写与失败修复逻辑，达不到原子性要求。
+
+### 2. 数据格式 v2 与 v1 迁移
+
+- 域声明升级为 `version: 2, compatibleVersions: [1]`，保留旧 `todos` 表声明；v2 `global` schema 为 `{ todos: Todo[], migrated: boolean }`（`src/host/domain.ts`）。
+- 启动时 `migrateLegacyTodos()`（`src/host/store.ts`）：若未迁移且旧表有记录，按旧 `order` 排序并重编号后**一次 `global.set({todos, migrated: true})`**；成功后 best-effort `deleteMany` 清理旧记录。
+- 迁移写失败会**中止插件激活**（`apply` 抛错），避免服务空列表而旧数据仍在文件里造成“数据丢失”假象；清理失败只记日志，`migrated` 标记保证不会二次迁移。
+- 真实数据验证：用当前测试 profile 的 v1 存储文件（2 条待办）做**只读离线模拟**，迁移前后 id / 标题 / 描述 / createdAt / updatedAt / order 完全一致，迁移后 CRUD 冒烟通过；未修改真实文件。
+- 在线迁移会在插件下次加载（重启 / 重载）时发生；本次未操作 `plugin_manager`，因此在线执行留给用户验收。
+
+### 3. 并发与幂等
+
+- `TodoService` 内所有变更进入单条 Promise 队列（`mutationTail`），读-改-写不交错：并发创建不会分配相同 `order`，`move` 不会与 `update`/`delete` 竞争丢数据；队列对失败隔离，后续操作不受影响。
+- `requestId` 幂等检查在队列内、且要求缓存命中的 todo **仍然存在**（避免删除后被缓存“复活”）；并发相同 `requestId` 只产生一条待办、一次写入。
+- 证据：`src/host/service.ts`；测试 `test/service.test.mjs`（并发同 requestId、并发不同 requestId、并发 move+update、并发 create+move、并发 delete+update、写入失败保持原状态）。
+
+### 4. HTTP 请求体处理
+
+- `readBody()` 改为按 `byteLength` 统计真实字节数（多字节中文无法绕过 256 KiB 上限），并使用流式 `TextDecoder`，跨 `data` chunk 边界被切开的 UTF-8 码点可正确还原；超限时调用 `request.destroy?.()` 停止读取（`src/host/api.ts`）。
+- 测试：`test/api.test.mjs` 新增“UTF-8 跨 chunk 拆分”“按字节而非字符串长度限流”“分块流式超限”用例。
+
+### 5. 验证状态
+
+- `pnpm build` / `typecheck` / `check` 通过；`pnpm test` **43/43** 通过。
+- 未执行：真实运行中的在线迁移、浏览器端到端、重启持久化、插件重载测试（未做任何 `plugin_manager` 变更操作）。

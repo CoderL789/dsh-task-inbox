@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   compareTodos,
   nextOrder,
+  normalizeOrder,
   normalizeTodoInput,
   planMove,
   sortTodos,
@@ -72,6 +73,19 @@ test('nextOrder appends after the highest order', () => {
   assert.equal(nextOrder([todo('a', 0), todo('b', 4)]), 5)
 })
 
+test('normalizeOrder assigns positions without touching timestamps', () => {
+  const updatedAt = '2026-11-10T10:00:00.000Z'
+  const items = [
+    todo('a', 3, '2026-11-10T09:00:00.000Z'),
+    todo('b', 7, '2026-11-10T08:00:00.000Z'),
+  ]
+  items[0].updatedAt = updatedAt
+  const normalized = normalizeOrder(items)
+  assert.deepEqual(normalized.map((item) => item.order), [0, 1])
+  assert.equal(normalized[0].updatedAt, updatedAt)
+  assert.equal(normalized[0].id, 'a')
+})
+
 test('planMove swaps adjacent items and renumbers every position', () => {
   const updatedAt = '2026-11-10T10:00:00.000Z'
   const items = [todo('a', 0), todo('b', 1), todo('c', 2)]
@@ -116,14 +130,20 @@ test('planMove normalizes duplicate order values', () => {
 test('domain spec follows storage naming rules and validates records', () => {
   assert.match(TODO_DOMAIN_SPEC.name, /^[a-z][a-z0-9_]*$/)
   assert.match(Object.keys(TODO_DOMAIN_SPEC.tables)[0], /^[a-z][a-z0-9_]*$/)
-  assert.equal(TODO_DOMAIN_SPEC.version, 1)
+  assert.equal(TODO_DOMAIN_SPEC.version, 2)
+  assert.deepEqual([...TODO_DOMAIN_SPEC.compatibleVersions], [1])
   assert.equal(TODO_DOMAIN_SPEC.layout, 'single')
 
-  const schema = TODO_DOMAIN_SPEC.tables.todos.valueSchema
+  const recordSchema = TODO_DOMAIN_SPEC.tables.todos.valueSchema
   const valid = todo('abc', 0)
-  assert.equal(schema.parse(valid).title, 'Task abc')
+  assert.equal(recordSchema.parse(valid).title, 'Task abc')
 
-  assert.throws(() => schema.parse({ ...valid, title: '' }))
-  assert.throws(() => schema.parse({ ...valid, status: 'done' }))
-  assert.throws(() => schema.parse({ ...valid, order: 1.5 }))
+  assert.throws(() => recordSchema.parse({ ...valid, title: '' }))
+  assert.throws(() => recordSchema.parse({ ...valid, status: 'done' }))
+  assert.throws(() => recordSchema.parse({ ...valid, order: 1.5 }))
+
+  const globalSchema = TODO_DOMAIN_SPEC.global.schema
+  assert.deepEqual(globalSchema.parse({ todos: [valid], migrated: true }).todos, [valid])
+  assert.throws(() => globalSchema.parse({ todos: [], migrated: 'yes' }))
+  assert.throws(() => globalSchema.parse(null))
 })

@@ -183,6 +183,8 @@ export interface NodeRequestLike {
   url?: string
   headers: Record<string, string | string[] | undefined>
   on(event: string, listener: (...args: unknown[]) => void): void
+  /** Present on real `IncomingMessage`; used to stop reading an oversized body. */
+  destroy?(): void
 }
 
 export interface NodeResponseLike {
@@ -197,22 +199,59 @@ export interface ApiHandlerOptions {
 
 class BodyTooLargeError extends Error {}
 
+const BYTE_ENCODER = new TextEncoder()
+
+function chunkBytes(chunk: unknown): Uint8Array {
+  if (typeof chunk === 'string') return BYTE_ENCODER.encode(chunk)
+  if (chunk instanceof Uint8Array) return chunk
+  if (ArrayBuffer.isView(chunk)) {
+    return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+  }
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk)
+  return BYTE_ENCODER.encode(String(chunk))
+}
+
+/**
+ * Read the request body as UTF-8 with an accurate BYTE limit.
+ *
+ * - The limit counts real bytes (`byteLength`), not JavaScript string length,
+ *   so multi-byte content cannot bypass it.
+ * - A streaming `TextDecoder` keeps code points intact when a request chunk
+ *   splits a multi-byte UTF-8 sequence across `data` events.
+ * - On overflow the request is destroyed (when the runtime supports it) so the
+ *   remaining payload is not read into memory.
+ */
 function readBody(request: NodeRequestLike): Promise<string> {
   return new Promise((resolve, reject) => {
-    let size = 0
-    const chunks: string[] = []
+    const decoder = new TextDecoder('utf-8')
+    const parts: string[] = []
+    let bytes = 0
+    let settled = false
+
+    const fail = (error: unknown): void => {
+      if (settled) return
+      settled = true
+      reject(error)
+      request.destroy?.()
+    }
+
     request.on('data', (...args: unknown[]) => {
-      const chunk = args[0]
-      const text = typeof chunk === 'string' ? chunk : String(chunk)
-      size += text.length
-      if (size > MAX_BODY_BYTES) {
-        reject(new BodyTooLargeError('Request body is too large.'))
+      if (settled) return
+      const chunk = chunkBytes(args[0])
+      bytes += chunk.byteLength
+      if (bytes > MAX_BODY_BYTES) {
+        fail(new BodyTooLargeError('Request body is too large.'))
         return
       }
-      chunks.push(text)
+      parts.push(decoder.decode(chunk, { stream: true }))
     })
-    request.on('end', () => resolve(chunks.join('')))
-    request.on('error', (error?: unknown) => reject(error))
+    request.on('end', () => {
+      if (settled) return
+      settled = true
+      parts.push(decoder.decode())
+      resolve(parts.join(''))
+    })
+    request.on('error', (error?: unknown) => fail(error))
   })
 }
 

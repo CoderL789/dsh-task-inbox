@@ -11,7 +11,7 @@
  * No Agent, workspace, or session APIs are used in this phase.
  */
 import { TODO_DOMAIN_SPEC } from './domain.js'
-import { DomainTodoRepository, type TodoDomainLike } from './store.js'
+import { DomainTodoRepository, migrateLegacyTodos, type TodoDomainLike } from './store.js'
 import { TodoService } from './service.js'
 import {
   API_PATH,
@@ -74,6 +74,17 @@ export async function apply(ctx: PluginContext): Promise<void> {
   ctx.effect(() => () => {
     void domain.close()
   })
+
+  try {
+    await migrateLegacyTodos(domain, {
+      warn: (message) => ctx.logger?.('dsh-task-inbox')?.warn?.(message),
+    })
+  } catch (error) {
+    ctx.logger?.('dsh-task-inbox')?.error?.(
+      `task-inbox v1 -> v2 data migration failed: ${describeError(error)}`,
+    )
+    throw error
+  }
 
   const service = new TodoService({
     repository: new DomainTodoRepository(domain),
