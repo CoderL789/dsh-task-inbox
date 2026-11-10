@@ -13,6 +13,7 @@ import {
   TodoServiceError,
 } from './service.js'
 import type { Todo, MoveDirection } from './model.js'
+import type { ExecutionContextProvider, ExecutionContextSnapshot } from './execution-context.js'
 
 export const API_PATH = '/plugins/dsh-task-inbox/api'
 export const MAX_BODY_BYTES = 256 * 1024
@@ -37,6 +38,7 @@ export type ApiOperation =
   | { op: 'update'; id: string; title: unknown; description: unknown; requestId: unknown }
   | { op: 'delete'; id: string }
   | { op: 'move'; id: string; direction: MoveDirection }
+  | { op: 'execution-context' }
 
 export type ParseResult =
   | { ok: true; operation: ApiOperation }
@@ -73,6 +75,8 @@ export function parseApiPayload(payload: unknown): ParseResult {
 
   switch (op) {
     case 'list':
+      return { ok: true, operation: { op } }
+    case 'execution-context':
       return { ok: true, operation: { op } }
     case 'create':
       return {
@@ -131,11 +135,31 @@ export function parseApiPayload(payload: unknown): ParseResult {
 export async function handleOperation(
   service: TodoService,
   operation: ApiOperation,
+  executionContext?: ExecutionContextProvider,
 ): Promise<ApiResult> {
   try {
     switch (operation.op) {
       case 'list':
         return success({ todos: service.list() })
+      case 'execution-context': {
+        if (executionContext === undefined) {
+          return failure(
+            'execution_unavailable',
+            'Execution configuration is not available in this profile.',
+          )
+        }
+        let context: ExecutionContextSnapshot
+        try {
+          context = await executionContext.build()
+        } catch (error) {
+          const detail = error instanceof Error && error.message !== '' ? `: ${error.message}` : ''
+          return failure(
+            'execution_unavailable',
+            `Execution configuration could not be loaded${detail}`,
+          )
+        }
+        return success({ context })
+      }
       case 'create': {
         const todo: Todo = await service.create({
           title: operation.title,
@@ -193,6 +217,7 @@ export interface NodeResponseLike {
 export interface ApiHandlerOptions {
   service: TodoService
   authorize: AuthorizeHeaders
+  executionContext?: ExecutionContextProvider
 }
 
 class BodyTooLargeError extends Error {}
@@ -327,7 +352,7 @@ export function createApiHandler(options: ApiHandlerOptions) {
         return
       }
 
-      const result = await handleOperation(options.service, parsed.operation)
+      const result = await handleOperation(options.service, parsed.operation, options.executionContext)
       sendJson(response, result.status, result.body)
     } catch (error) {
       if (error instanceof BodyTooLargeError) {

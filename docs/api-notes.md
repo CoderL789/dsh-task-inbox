@@ -511,3 +511,61 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - `pnpm build` / `typecheck` / `check` 通过；`pnpm test` **56/56** 通过。
 - 未调用 `plugin_manager`、未提交/推送。
 - 真实存储文件说明：v1→v2 在线迁移已在**上一轮**（19:25 左右）由插件热重载自动执行，**不是本轮操作**；本轮多次 `pnpm build` 后文件 mtime 未变化。迁移后 2 条真实待办均在（id / 标题 / 描述 / createdAt / order 与迁移前一致）；两条记录的 `updatedAt` 变为迁移后某次排序操作的时间，迁移代码与测试本身不改 `updatedAt`。已额外复制一份只读备份 `$DSH_HOME/storages/task_inbox.v2.after-migration.backup.json`，未改动原文件。
+
+---
+
+## 附：Task 03A 执行能力 API 验证（2026-11-10）
+
+环境：profile `desktop`，DSH `0.2.2-rc.1`，Web GUI 已连接；全部结论来自 `cordis_inspect_query`（host/client）与已安装包 README / `lib` 源码。
+
+### 1. 能力与调用契约清单
+
+| 能力 | 接口（逐字/摘要） | 面 | 可用性 | 证据与限制 |
+|---|---|---|---|---|
+| Workspace 列表 / 路径 / 成员 | `ctx.workspaceRegistry.list(): Workspace[]`；`Workspace { id, title, path, sessionIds, status(), ... }` | Host public | ✅ 第三方 Host 插件可用 | `inspect:host Service.listService(service="workspaceRegistry")`；`sessionIds` 由 canonical-cwd header index 过滤，`list()` 不做持久化读取；`status()` 异步返回 `'ok' \| 'missing-dir'` |
+| 按路径解析 Workspace | `resolveByPath(path): Promise<Workspace \| undefined>` | Host public | ✅ | 同上 |
+| 已注册 Workspace 的 Session | `Workspace.sessionIds` + `ctx.sessionPersistence.list()` | Host public | ✅ | `sessionIds` 只给 id；持久化列表补充 header/eventCount |
+| 已存 Session 列表（含冷会话） | `ctx.sessionPersistence.list(): Promise<SessionPersistenceSnapshot[]>`；`SessionPersistenceSnapshot { header, formatStatus?, revision, eventCount?, sizeBytes?, location? }`；`SessionHeader { id, cwd?, createdAt, parentSession?, isSeeded, origin?, ... }` | Host public | ✅ | `inspect:host Service.listService(service="sessionPersistence")`；不恢复 Agent，不读完整日志 |
+| 活会话读取 | `ctx.sessions.get(id): Session \| undefined`；`list(): Session[]` | Host public | ✅（仅 live） | `inspect:host Service.listService(service="sessions")`；冷会话不在内存 store |
+| 会话标题 | `ctx.sessionTitle.get(session): SessionTitleSnapshot \| undefined` | Host public | ✅（仅 live Session） | 冷会话标题需读日志，预览阶段不读取（成本/复杂度） |
+| 会话摘要（blank / running / updatedAt / agentAvailable） | `ctx.sessionController.list(request, signal): Promise<SessionListValue>`（`SessionSummary { sessionId, cwd?, running, blank, agentAvailable, updatedAt, parentSessionId?, origin? }`） | Host `@Remote` | ⚠️ 可调但非第三方契约 | `inspect:host Service.listService(service="sessionController")`；Task 03A 未使用，以避免在 Host 内绕过 Peer 访问策略 |
+| 新建会话 | `sessionController.create(request: SessionCreateRequest): Promise<SessionCreateValue>`；`request { workspaceId?, cwd?, sessionId?, agentPreset? }` → `{ sessionId }` | Host `@Remote` | ⚠️ | `inspect:host` + `pkg:@deepseek-ai/dsh-api-session-controller/README.md:36,48`；命名空白复用规则、`session/conflict`、`session/agent-busy`；create/fork 是仅有的“直接创建新 Agent”操作 |
+| Fork | `sessionController.fork({ sessionId, atSeq?, allowMigration? }): Promise<{ sessionId }>` | Host `@Remote` | ⚠️ | README:36,67；复制 inclusive event prefix，省略 `atSeq` 取最近完成轮次，源会话不被改写，child 无 parentSession |
+| Fork（public 备选） | `ctx.sessions.fork(source, boundary?, childSessionId?): Session` | Host public | ⚠️ 不足 | 仅能从**活着的**源 fork，返回 `Session` 而非 Agent；无公开文档说明如何为该 child 创建可驱动 Agent |
+| 复用 / 派发（Agent 路径） | `ctx.agents.get(id)`；`ctx.agents.resume({ resumeSessionId })`；`AgentHandle.agent.followup/steer/inject/cancel/whenIdle` | Host public | ✅ | `inspect:host agents`；`pkg:@deepseek-ai/dsh-agent/README.md:56-70`；writer lock 失败见 README:69 |
+| 派发（Remote 路径） | `sessionController.prompt({ requestId, sessionId, mode: 'queue'\|'steer', content }): Promise<{ accepted: true }>` | Host `@Remote` | ⚠️ | README:36；`requestId` 幂等（已在队列/日志中则返回原接受结果），服务端先 resume |
+| Client 专用 | `ctx.uiWorkspace.startSession/connectWorkspace/openSession/openWorkspace/forkSession`；`ctx.sessions.retain/fork` | Client | ⚠️ Host 插件不可用 | `inspect:client Service` + `pkg:@deepseek-ai/dsh-client-ui-workspace/lib/client.js`；只能用于浏览器侧导航/交互 |
+| 内部 / 不稳 | `agentLoop.create/createAgent/resume`；`sessions.create/prepare/enter/announce`；`appendPluginRecord()` | Host 内部/实验 | 🚫 不作为 Task 03B 基础 | `inspect:host agentLoop/sessions`；`skill-ref:practices.md:21` |
+| 权限 / 所有权 | @Remote 经过 `dsh-api-remote-access` Peer 策略；复用受 writer lock（`session/writer-held`）、`session/not-found`、`session/agent-busy`；归档会话被 `agent/pre-step` gate 拒绝 | Host/Remote | ⚠️ | `pkg:@deepseek-ai/dsh-api-session-controller/README.md:36-38,69,79`；Host 进程内直接调用 @Remote 会绕过 Peer 策略 |
+| SessionId 铸造 | `sessionController.create` / `sessionController.fork` 返回；未见其他公开第三方铸造入口 | Host/Remote | ⚠️ | 公开 `agents.create` 要求显式 SessionId；`sessions.create()` 的自动 id 不属于 Agent 生命周期 |
+
+### 2. Task 03A 的实现选择（只读）
+
+- 仅使用 public Host 服务：`workspaceRegistry.list()`、`sessionPersistence.list()`、`sessions.get()`、`sessionTitle.get(session)`；**不调用任何 @Remote、不 create/fork/resume/prompt**。
+- 新增只读 HTTP 操作 `execution-context`（经 Task 02 同源浏览器认证保护）返回 Workspace + 会话候选与可用性（`src/host/execution-context.ts`）。
+- 规则：Session 必须已存储且属于所选 Workspace；`eventCount === 0` 视为空白会话，不用于复用/Fork；`origin: 'subagent'` 排除；Workspace `status() !== 'ok'` 标记不可用；归档状态与「已完成轮次」不在预览阶段断言，作为 warning 交给派发时 Host 校验。
+- 单元测试：`test/execution-context.test.mjs` 覆盖按 Workspace 筛选、跨 Workspace 隔离、空白/缺失/subagent 排除、三种策略校验、服务缺失或持久化失败时降级；API 测试覆盖 `execution-context` 操作。
+
+### 3. 三种执行策略的可行性结论
+
+| 策略 | 推荐实现（Task 03B） | 可行性 | 主要限制 / 风险 |
+|---|---|---|---|
+| 新建 | `sessionController.create({ workspaceId })` → `sessionId` | ⚠️ 可行（@Remote） | 非第三方稳定契约；Host 内调用绕过 Peer 授权；需保留 `sessionId` 作为执行关联 |
+| 复用 | `agents.get(id)` 或 `agents.resume({ resumeSessionId })` → `handle.agent.followup(...)` | ✅ public Host 路径 | writer lock/`session/writer-held`；需持有并在超时/卸载时释放 AgentHandle；followup 无内建 requestId 幂等，重试前需查日志 |
+| Fork | `sessionController.fork({ sessionId })` → child `sessionId` | ⚠️ 可行（@Remote） | public `sessions.fork` 返回无 Agent 的 Session，无法独立驱动；冷源 Fork 需 @Remote；源会话不被修改 |
+
+### 4. Task 03B 必须解决的事项
+
+1. **意图记录先落盘**：`executionId / todoId / strategy / workspaceId / sourceSessionId / requestId / status` 先写入插件域（v3 迁移保留 v2 待办），再调用 DSH。
+2. **接受确认与幂等**：Remote 路径以 `{accepted:true}` + 日志中 `requestId` 为准；Agent 路径需在日志中观察到对应 `user/message` 后才标记接受；失败/超时不得盲目重发。
+3. **失败与重启恢复**：扫描 `dispatching/unknown` 记录，按 Session 日志判定已接受/未接受/未知；未知不自动重发。
+4. **权限与用户触发**：仅用户点击“确认执行”后派发；不绕过审批/权限；对 @Remote 的 Peer 绕过风险做明确记录或等待官方 Host API。
+5. **原 Todo 保护**：执行记录仅引用 `todoId`，失败不删除/改写 Todo；Task 04 再定义完成语义。
+
+详细方案见 [task-03b-design.md](task-03b-design.md)。
+
+### 5. Task 03A 验证状态
+
+- `pnpm build` / `typecheck` / `check` / `test` 通过；`pnpm test` **67/67** 通过（新增执行上下文与策略校验用例）。
+- 未创建 / Fork / 恢复任何真实 Session，未发送任何 Prompt，未调用 `plugin_manager`，未修改 Workspace / Session / Profile 配置。
+- 未验证：浏览器中的执行配置界面交互、中英文与明暗主题（需人工验收）；冷会话标题、归档状态与「已完成轮次」在预览阶段不可确认（已作为限制记录）。

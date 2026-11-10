@@ -19,6 +19,14 @@ import {
   type NodeRequestLike,
   type NodeResponseLike,
 } from './api.js'
+import {
+  buildExecutionContext,
+  type ExecutionContextProvider,
+  type LiveSessionsLike,
+  type SessionPersistenceLike,
+  type SessionTitleLike,
+  type WorkspaceRegistryLike,
+} from './execution-context.js'
 
 export const inject = ['webServer', 'connection', 'storageDomain'] as const
 
@@ -47,6 +55,8 @@ interface PluginContext {
     open(spec: typeof TODO_DOMAIN_SPEC): Promise<TodoDomainLike>
   }
   effect(effect: () => (() => void) | void): () => void
+  /** Optional service lookup for services that may be absent in a profile. */
+  get?<T>(name: string): T | undefined
   logger?: (name: string) => LoggerLike
 }
 
@@ -97,8 +107,22 @@ export async function apply(ctx: PluginContext): Promise<void> {
     ids: { next: createTodoId },
   })
 
+  // Read-only execution context for the Task 03A pre-execution preview.
+  // These services are looked up optionally so the todo feature keeps working
+  // in a profile that lacks workspace/session persistence.
+  const executionContext: ExecutionContextProvider = {
+    build: () =>
+      buildExecutionContext({
+        workspaceRegistry: ctx.get?.<WorkspaceRegistryLike>('workspaceRegistry'),
+        sessionPersistence: ctx.get?.<SessionPersistenceLike>('sessionPersistence'),
+        sessions: ctx.get?.<LiveSessionsLike>('sessions'),
+        sessionTitle: ctx.get?.<SessionTitleLike>('sessionTitle'),
+      }),
+  }
+
   const handler = createApiHandler({
     service,
+    executionContext,
     authorize: (headers) => ctx.connection.requestRejection({ headers }),
   })
 

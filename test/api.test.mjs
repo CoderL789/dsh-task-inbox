@@ -54,6 +54,10 @@ test('parseApiPayload rejects malformed envelopes and operations', () => {
   const move = parseApiPayload({ op: 'move', id: 'a', direction: 'up' })
   assert.equal(move.ok, true)
   assert.equal(move.operation.direction, 'up')
+
+  const executionContext = parseApiPayload({ op: 'execution-context' })
+  assert.equal(executionContext.ok, true)
+  assert.equal(executionContext.operation.op, 'execution-context')
 })
 
 test('handleOperation maps service results and business errors', async () => {
@@ -88,6 +92,35 @@ test('handleOperation maps service results and business errors', async () => {
 
   const deleted = await handleOperation(service, { op: 'delete', id: created.body.data.todo.id })
   assert.equal(deleted.body.data.deleted, true)
+})
+
+test('handleOperation serves and fails execution-context safely', async () => {
+  const { service } = makeService()
+  const snapshot = {
+    available: true,
+    workspaces: [{ id: 'ws-a', title: 'A', path: '/work/a', available: true, availability: 'ok' }],
+    sessions: [],
+  }
+  const provided = await handleOperation(service, { op: 'execution-context' }, {
+    build: async () => snapshot,
+  })
+  assert.equal(provided.status, 200)
+  assert.equal(provided.body.ok, true)
+  assert.deepEqual(provided.body.data.context, snapshot)
+
+  const missing = await handleOperation(service, { op: 'execution-context' })
+  assert.equal(missing.status, 200)
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.error.code, 'execution_unavailable')
+
+  const failing = await handleOperation(service, { op: 'execution-context' }, {
+    build: async () => {
+      throw new Error('context unavailable')
+    },
+  })
+  assert.equal(failing.body.ok, false)
+  assert.equal(failing.body.error.code, 'execution_unavailable')
+  assert.match(failing.body.error.message, /context unavailable/)
 })
 
 test('handleOperation maps unexpected errors to HTTP 500', async () => {

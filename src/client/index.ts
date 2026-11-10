@@ -100,6 +100,37 @@ interface Banner {
   message: string
 }
 
+type ExecutionStrategy = 'new' | 'reuse' | 'fork'
+
+interface ExecutionWorkspace {
+  id: string
+  title: string
+  path: string
+  available: boolean
+  availability: 'ok' | 'missing-dir' | 'unknown'
+}
+
+interface ExecutionSession {
+  sessionId: string
+  workspaceId: string
+  title?: string
+  createdAt?: number
+  live: boolean
+  stored: boolean
+  blank: boolean
+  suitableForReuse: boolean
+  suitableForFork: boolean
+  unavailableReasons: string[]
+  warnings: string[]
+}
+
+interface ExecutionContextSnapshot {
+  available: boolean
+  reason?: string
+  workspaces: ExecutionWorkspace[]
+  sessions: ExecutionSession[]
+}
+
 const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
   en: {
     'panel.label': 'Task Inbox',
@@ -136,6 +167,56 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'feedback.created': 'Task added.',
     'feedback.updated': 'Task saved.',
     'feedback.deleted': 'Task deleted.',
+    'execution.action': 'Execute',
+    'execution.panel.title': 'Configure execution',
+    'execution.preview.badge': 'Preview only — nothing is sent',
+    'execution.preview.notice':
+      'Dispatch is not connected yet (Task 03B). This confirmation only validates the configuration; no session is created and no Agent receives the task.',
+    'execution.preview.persistent':
+      'Task 03A preview: choosing a workspace or session does not execute anything.',
+    'execution.todo.label': 'Task',
+    'execution.workspace.label': 'Workspace',
+    'execution.workspace.placeholder': 'Select a workspace',
+    'execution.workspace.unavailable': 'directory unavailable',
+    'execution.workspace.empty': 'No registered workspaces.',
+    'execution.strategy.label': 'Session strategy',
+    'execution.strategy.new': 'New session',
+    'execution.strategy.reuse': 'Reuse session',
+    'execution.strategy.fork': 'Fork session',
+    'execution.strategy.new.hint': 'Create a new session in this workspace. Dispatch arrives in Task 03B.',
+    'execution.strategy.reuse.hint': 'Append the task to an existing non-blank session.',
+    'execution.strategy.fork.hint': 'Fork from an existing session and keep its context.',
+    'execution.session.label': 'Source session',
+    'execution.session.placeholder': 'Select a session',
+    'execution.session.empty': 'No sessions in this workspace.',
+    'execution.session.blank': 'blank',
+    'execution.session.notFound': 'not found',
+    'execution.session.live': 'live',
+    'execution.session.noneSuitable': 'No session in this workspace is suitable for this strategy.',
+    'execution.session.unavailableCount':
+      '{n} session(s) in this workspace are not suitable for this strategy.',
+    'execution.session.warningArchive':
+      'Archive state is validated by the Host at dispatch time.',
+    'execution.session.warningFork':
+      'Fork needs a session with a completed turn; the Host validates it at dispatch time.',
+    'execution.summary.title': 'Summary',
+    'execution.summary.todo': 'Task',
+    'execution.summary.workspace': 'Workspace',
+    'execution.summary.strategy': 'Strategy',
+    'execution.summary.session': 'Source session',
+    'execution.summary.newSession': 'New session',
+    'execution.summary.unset': 'Not selected',
+    'execution.confirm': 'Confirm configuration (preview)',
+    'execution.back': 'Back to tasks',
+    'execution.loading': 'Loading workspaces and sessions…',
+    'execution.retry': 'Retry',
+    'execution.error.load': 'Execution configuration could not be loaded.',
+    'execution.error.workspaceRequired': 'Select a workspace first.',
+    'execution.error.workspaceUnavailable': 'The selected workspace is unavailable.',
+    'execution.error.sessionRequired': 'Select a source session.',
+    'execution.error.sessionUnsuitable': 'The selected session is not suitable for this strategy.',
+    'execution.titleUnknown': 'Untitled session',
+    'error.execution_unavailable': 'Execution configuration is not available.',
     'banner.dismiss': 'Dismiss',
     'error.network': 'Cannot reach the Task Inbox service.',
     'error.unauthorized': 'Your session is not authorized. Reload the page and try again.',
@@ -184,6 +265,52 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'feedback.created': '已添加待办。',
     'feedback.updated': '已保存修改。',
     'feedback.deleted': '已删除待办。',
+    'execution.action': '执行',
+    'execution.panel.title': '配置执行',
+    'execution.preview.badge': '仅预览——不会发送任务',
+    'execution.preview.notice':
+      '派发尚未接通（Task 03B）。本次确认仅校验配置，不会创建会话，也不会向 Agent 发送任务。',
+    'execution.preview.persistent': 'Task 03A 预览：选择工作区或会话不会执行任何操作。',
+    'execution.todo.label': '待办',
+    'execution.workspace.label': '工作区',
+    'execution.workspace.placeholder': '选择工作区',
+    'execution.workspace.unavailable': '目录不可用',
+    'execution.workspace.empty': '还没有已注册的工作区。',
+    'execution.strategy.label': '会话策略',
+    'execution.strategy.new': '新建会话',
+    'execution.strategy.reuse': '复用会话',
+    'execution.strategy.fork': 'Fork 会话',
+    'execution.strategy.new.hint': '在该工作区创建新会话；派发将在 Task 03B 接通。',
+    'execution.strategy.reuse.hint': '把待办追加到已有的非空白会话。',
+    'execution.strategy.fork.hint': '从已有会话 Fork，并保留其上下文。',
+    'execution.session.label': '来源会话',
+    'execution.session.placeholder': '选择会话',
+    'execution.session.empty': '该工作区下没有会话。',
+    'execution.session.blank': '空白',
+    'execution.session.notFound': '不存在',
+    'execution.session.live': '活跃',
+    'execution.session.noneSuitable': '该工作区下没有适合此策略的会话。',
+    'execution.session.unavailableCount': '该工作区下另有 {n} 个会话不适合此策略。',
+    'execution.session.warningArchive': '归档状态将在派发时由 Host 校验。',
+    'execution.session.warningFork': 'Fork 需要包含已完成轮次的会话；派发时由 Host 校验。',
+    'execution.summary.title': '摘要',
+    'execution.summary.todo': '待办',
+    'execution.summary.workspace': '工作区',
+    'execution.summary.strategy': '策略',
+    'execution.summary.session': '来源会话',
+    'execution.summary.newSession': '新建会话',
+    'execution.summary.unset': '未选择',
+    'execution.confirm': '确认配置（仅预览）',
+    'execution.back': '返回待办列表',
+    'execution.loading': '正在加载工作区与会话…',
+    'execution.retry': '重试',
+    'execution.error.load': '执行配置加载失败。',
+    'execution.error.workspaceRequired': '请先选择工作区。',
+    'execution.error.workspaceUnavailable': '所选工作区不可用。',
+    'execution.error.sessionRequired': '请选择来源会话。',
+    'execution.error.sessionUnsuitable': '所选会话不适合该策略。',
+    'execution.titleUnknown': '未命名会话',
+    'error.execution_unavailable': '执行配置暂不可用。',
     'banner.dismiss': '关闭',
     'error.network': '无法连接待办箱服务。',
     'error.unauthorized': '当前会话未授权，请刷新页面后重试。',
@@ -206,6 +333,8 @@ const ICON_EDIT = ['M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z', 'M13.5 6.5l4 4'
 const ICON_TRASH = ['M4 7h16', 'M10 11v6', 'M14 11v6', 'M6 7l1 13h10l1-13', 'M9 7V4h6v3']
 const ICON_X = ['M6 6l12 12', 'M18 6L6 18']
 const ICON_RETRY = ['M4 12a8 8 0 1 0 2.4-5.7', 'M4 4v5h5']
+const ICON_PLAY = ['M8 5l11 7-11 7z']
+const ICON_BACK = ['M19 12H5', 'M12 19l-7-7 7-7']
 
 const STYLES: Record<string, Style> = {
   page: {
@@ -439,6 +568,98 @@ const STYLES: Record<string, Style> = {
     fontSize: '13px',
     color: 'var(--dsw-alias-label-secondary)',
   },
+  executionPanel: {
+    boxSizing: 'border-box',
+    border: '1px solid var(--dsw-alias-border-l1)',
+    borderRadius: '12px',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    padding: '20px',
+    marginBottom: '16px',
+  },
+  panelHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '12px',
+    flexWrap: 'wrap',
+  },
+  executionBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '2px 8px',
+    borderRadius: '999px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-state-warn-primary)',
+    fontSize: '11px',
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  sectionBox: {
+    marginTop: '14px',
+    padding: '12px',
+    borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+  },
+  sectionLabel: { margin: '16px 0 6px', fontSize: '12px', fontWeight: 600 },
+  hintText: {
+    margin: '6px 0 0',
+    fontSize: '12px',
+    lineHeight: 1.5,
+    color: 'var(--dsw-alias-label-secondary)',
+  },
+  strategyGroup: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
+  strategyButton: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '7px 12px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-l1)',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-label-primary)',
+    fontSize: '13px',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  strategyButtonActive: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '7px 12px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-brand-primary)',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-brand-primary)',
+    fontSize: '13px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  summaryBox: {
+    marginTop: '16px',
+    padding: '12px',
+    borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    fontSize: '13px',
+  },
+  summaryRow: { display: 'flex', gap: '12px', justifyContent: 'space-between' },
+  summaryKey: {
+    color: 'var(--dsw-alias-label-secondary)',
+    flexShrink: 0,
+  },
+  summaryValue: { textAlign: 'right', wordBreak: 'break-word' },
+  previewNotice: {
+    marginTop: '16px',
+    padding: '10px 12px',
+    borderLeft: '3px solid var(--dsw-alias-state-warn-primary)',
+    borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    fontSize: '13px',
+    lineHeight: 1.5,
+  },
 }
 
 class ClientApiError extends Error {
@@ -535,6 +756,33 @@ function newRequestId(): string {
   const cryptoApi = globalThis.crypto
   if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
   return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function isSessionSuitableForStrategy(
+  session: ExecutionSession,
+  strategy: ExecutionStrategy,
+): boolean {
+  if (strategy === 'reuse') return session.suitableForReuse
+  if (strategy === 'fork') return session.suitableForFork
+  return strategy === 'new'
+}
+
+function strategyLabel(t: Translate, strategy: ExecutionStrategy): string {
+  if (strategy === 'reuse') return t('execution.strategy.reuse')
+  if (strategy === 'fork') return t('execution.strategy.fork')
+  return t('execution.strategy.new')
+}
+
+function sessionDisplayLabel(t: Translate, session: ExecutionSession): string {
+  const title =
+    typeof session.title === 'string' && session.title.trim() !== ''
+      ? session.title
+      : t('execution.titleUnknown')
+  const flags: string[] = []
+  if (session.blank) flags.push(t('execution.session.blank'))
+  if (!session.stored) flags.push(t('execution.session.notFound'))
+  else if (session.live) flags.push(t('execution.session.live'))
+  return flags.length === 0 ? title : `${title} (${flags.join(', ')})`
 }
 
 window.__ModuleLoader__.load({
@@ -659,6 +907,16 @@ window.__ModuleLoader__.load({
           const [saving, setSaving] = React.useState(false)
           const [busyId, setBusyId] = React.useState<string | null>(null)
           const [confirmId, setConfirmId] = React.useState<string | null>(null)
+          const [executionTarget, setExecutionTarget] = React.useState<Todo | null>(null)
+          const [executionContext, setExecutionContext] =
+            React.useState<ExecutionContextSnapshot | null>(null)
+          const [executionLoading, setExecutionLoading] = React.useState(false)
+          const [executionError, setExecutionError] = React.useState<string | null>(null)
+          const [executionWorkspaceId, setExecutionWorkspaceId] = React.useState('')
+          const [executionStrategy, setExecutionStrategy] =
+            React.useState<ExecutionStrategy>('new')
+          const [executionSessionId, setExecutionSessionId] = React.useState('')
+          const [executionNotice, setExecutionNotice] = React.useState<string | null>(null)
           const titleInputRef = React.useRef<{ focus(): void } | null>(null)
 
           React.useEffect(() => {
@@ -799,6 +1057,62 @@ window.__ModuleLoader__.load({
             }
           }
 
+          async function loadExecutionContext(signal?: AbortSignal): Promise<void> {
+            setExecutionLoading(true)
+            setExecutionError(null)
+            try {
+              const data = await callApi<{ context: ExecutionContextSnapshot }>(
+                { op: 'execution-context' },
+                signal,
+              )
+              setExecutionContext(data.context)
+            } catch (error) {
+              if (!isAbort(error)) setExecutionError(errorCode(error))
+            } finally {
+              if (signal === undefined || !signal.aborted) setExecutionLoading(false)
+            }
+          }
+
+          function openExecution(todo: Todo): void {
+            setExecutionTarget(todo)
+            setExecutionContext(null)
+            setExecutionError(null)
+            setExecutionLoading(false)
+            setExecutionWorkspaceId('')
+            setExecutionStrategy('new')
+            setExecutionSessionId('')
+            setExecutionNotice(null)
+            setConfirmId(null)
+            setEditorMode(null)
+            setEditingId(null)
+            void loadExecutionContext()
+          }
+
+          function closeExecution(): void {
+            setExecutionTarget(null)
+            setExecutionContext(null)
+            setExecutionError(null)
+            setExecutionNotice(null)
+          }
+
+          function onExecutionWorkspaceChange(workspaceId: string): void {
+            setExecutionWorkspaceId(workspaceId)
+            // A source session from the previous workspace is no longer valid.
+            setExecutionSessionId('')
+            setExecutionNotice(null)
+          }
+
+          function onExecutionStrategyChange(strategy: ExecutionStrategy): void {
+            setExecutionStrategy(strategy)
+            setExecutionSessionId('')
+            setExecutionNotice(null)
+          }
+
+          function onExecutionSessionChange(sessionId: string): void {
+            setExecutionSessionId(sessionId)
+            setExecutionNotice(null)
+          }
+
           function renderBanner(): unknown {
             if (banner === null) return null
             const success = banner.kind === 'success'
@@ -820,6 +1134,297 @@ window.__ModuleLoader__.load({
                 },
                 svgIcon(14, ICON_X),
               ),
+            )
+          }
+
+          function renderExecutionPanel(): unknown {
+            if (executionTarget === null) return null
+            const target = executionTarget
+            const context = executionContext
+            const workspace =
+              context === null
+                ? undefined
+                : context.workspaces.find((entry) => entry.id === executionWorkspaceId)
+            const sessionsInWorkspace =
+              context === null
+                ? []
+                : context.sessions.filter(
+                    (session) => session.workspaceId === executionWorkspaceId,
+                  )
+            const strategySessions = sessionsInWorkspace.filter((session) =>
+              isSessionSuitableForStrategy(session, executionStrategy),
+            )
+            const sourceSession = sessionsInWorkspace.find(
+              (session) => session.sessionId === executionSessionId,
+            )
+            const unsuitableCount = sessionsInWorkspace.length - strategySessions.length
+
+            function summaryRow(label: string, value: string): unknown {
+              return h(
+                'div',
+                { style: STYLES.summaryRow },
+                h('span', { style: STYLES.summaryKey }, label),
+                h('span', { style: STYLES.summaryValue }, value),
+              )
+            }
+
+            function confirmExecution(): void {
+              if (executionWorkspaceId === '') {
+                setExecutionNotice(t('execution.error.workspaceRequired'))
+                return
+              }
+              if (workspace !== undefined && !workspace.available) {
+                setExecutionNotice(t('execution.error.workspaceUnavailable'))
+                return
+              }
+              if (executionStrategy !== 'new') {
+                if (executionSessionId === '') {
+                  setExecutionNotice(t('execution.error.sessionRequired'))
+                  return
+                }
+                if (
+                  sourceSession === undefined ||
+                  !isSessionSuitableForStrategy(sourceSession, executionStrategy)
+                ) {
+                  setExecutionNotice(t('execution.error.sessionUnsuitable'))
+                  return
+                }
+              }
+              // Task 03A: configuration preview only — no dispatch.
+              setExecutionNotice(t('execution.preview.notice'))
+            }
+
+            function renderBody(): unknown {
+              if (executionLoading) {
+                return h('p', { style: STYLES.muted }, t('execution.loading'))
+              }
+              if (executionError !== null) {
+                return h(
+                  'div',
+                  null,
+                  h(
+                    'p',
+                    { role: 'alert', style: STYLES.errorText },
+                    messageForCode(t, executionError),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: { ...STYLES.secondaryButton, marginTop: '12px' },
+                      onClick: () => void loadExecutionContext(),
+                    },
+                    t('execution.retry'),
+                  ),
+                )
+              }
+              if (context === null || !context.available) {
+                return h(
+                  'p',
+                  { role: 'alert', style: STYLES.errorText },
+                  context?.reason ?? t('error.execution_unavailable'),
+                )
+              }
+
+              const strategies: ExecutionStrategy[] = ['new', 'reuse', 'fork']
+              const strategyHint =
+                executionStrategy === 'new'
+                  ? t('execution.strategy.new.hint')
+                  : executionStrategy === 'reuse'
+                    ? t('execution.strategy.reuse.hint')
+                    : t('execution.strategy.fork.hint')
+
+              return h(
+                'div',
+                null,
+                h(
+                  'label',
+                  { htmlFor: 'task-inbox-exec-workspace', style: STYLES.sectionLabel },
+                  t('execution.workspace.label'),
+                ),
+                h(
+                  'select',
+                  {
+                    id: 'task-inbox-exec-workspace',
+                    value: executionWorkspaceId,
+                    style: STYLES.input,
+                    onChange: (event: { target: { value: string } }) =>
+                      onExecutionWorkspaceChange(event.target.value),
+                  },
+                  h('option', { value: '' }, t('execution.workspace.placeholder')),
+                  ...context.workspaces.map((entry) =>
+                    h(
+                      'option',
+                      { key: entry.id, value: entry.id, disabled: !entry.available },
+                      `${entry.title} — ${entry.path}${
+                        entry.available ? '' : ` (${t('execution.workspace.unavailable')})`
+                      }`,
+                    ),
+                  ),
+                ),
+                context.workspaces.length === 0
+                  ? h('p', { style: STYLES.hintText }, t('execution.workspace.empty'))
+                  : null,
+                workspace !== undefined && !workspace.available
+                  ? h('p', { style: STYLES.errorText }, t('execution.error.workspaceUnavailable'))
+                  : null,
+
+                h('div', { style: { ...STYLES.sectionLabel, marginTop: '16px' } }, t('execution.strategy.label')),
+                h(
+                  'div',
+                  { style: STYLES.strategyGroup },
+                  ...strategies.map((strategy) =>
+                    h(
+                      'button',
+                      {
+                        key: strategy,
+                        type: 'button',
+                        style:
+                          executionStrategy === strategy
+                            ? STYLES.strategyButtonActive
+                            : STYLES.strategyButton,
+                        'aria-pressed': executionStrategy === strategy,
+                        onClick: () => onExecutionStrategyChange(strategy),
+                      },
+                      strategyLabel(t, strategy),
+                    ),
+                  ),
+                ),
+                h('p', { style: STYLES.hintText }, strategyHint),
+
+                executionStrategy === 'new'
+                  ? null
+                  : h(
+                      'div',
+                      null,
+                      h(
+                        'label',
+                        { htmlFor: 'task-inbox-exec-session', style: STYLES.sectionLabel },
+                        t('execution.session.label'),
+                      ),
+                      h(
+                        'select',
+                        {
+                          id: 'task-inbox-exec-session',
+                          value: executionSessionId,
+                          style: STYLES.input,
+                          onChange: (event: { target: { value: string } }) =>
+                            onExecutionSessionChange(event.target.value),
+                        },
+                        h('option', { value: '' }, t('execution.session.placeholder')),
+                        ...sessionsInWorkspace.map((session) =>
+                          h(
+                            'option',
+                            {
+                              key: session.sessionId,
+                              value: session.sessionId,
+                              disabled: !isSessionSuitableForStrategy(session, executionStrategy),
+                            },
+                            sessionDisplayLabel(t, session),
+                          ),
+                        ),
+                      ),
+                      sessionsInWorkspace.length === 0
+                        ? h('p', { style: STYLES.hintText }, t('execution.session.empty'))
+                        : null,
+                      strategySessions.length === 0 && sessionsInWorkspace.length > 0
+                        ? h('p', { style: STYLES.hintText }, t('execution.session.noneSuitable'))
+                        : null,
+                      unsuitableCount > 0
+                        ? h(
+                            'p',
+                            { style: STYLES.hintText },
+                            t('execution.session.unavailableCount').replace(
+                              '{n}',
+                              String(unsuitableCount),
+                            ),
+                          )
+                        : null,
+                      h('p', { style: STYLES.hintText }, t('execution.session.warningArchive')),
+                      executionStrategy === 'fork'
+                        ? h('p', { style: STYLES.hintText }, t('execution.session.warningFork'))
+                        : null,
+                    ),
+
+                h(
+                  'div',
+                  { style: STYLES.summaryBox },
+                  h('div', { style: { fontWeight: 600 } }, t('execution.summary.title')),
+                  summaryRow(t('execution.summary.todo'), target.title),
+                  summaryRow(
+                    t('execution.summary.workspace'),
+                    workspace === undefined
+                      ? t('execution.summary.unset')
+                      : `${workspace.title} — ${workspace.path}`,
+                  ),
+                  summaryRow(t('execution.summary.strategy'), strategyLabel(t, executionStrategy)),
+                  summaryRow(
+                    t('execution.summary.session'),
+                    executionStrategy === 'new'
+                      ? t('execution.summary.newSession')
+                      : sourceSession === undefined
+                        ? t('execution.summary.unset')
+                        : sessionDisplayLabel(t, sourceSession),
+                  ),
+                ),
+
+                executionNotice === null
+                  ? null
+                  : h('div', { role: 'status', style: STYLES.previewNotice }, executionNotice),
+                h(
+                  'div',
+                  { style: STYLES.formActions },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: STYLES.secondaryButton,
+                      onClick: closeExecution,
+                    },
+                    t('execution.back'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: STYLES.primaryButton,
+                      onClick: confirmExecution,
+                    },
+                    t('execution.confirm'),
+                  ),
+                ),
+              )
+            }
+
+            return h(
+              'div',
+              {
+                style: STYLES.executionPanel,
+                onKeyDown: (event: { key?: string }) => {
+                  if (event.key === 'Escape') closeExecution()
+                },
+              },
+              h(
+                'div',
+                { style: STYLES.panelHeader },
+                h(
+                  'div',
+                  { style: { minWidth: 0 } },
+                  h('h2', { style: STYLES.cardTitle }, t('execution.panel.title')),
+                  h('p', { style: STYLES.hintText }, t('execution.preview.persistent')),
+                ),
+                h('span', { style: STYLES.executionBadge }, t('execution.preview.badge')),
+              ),
+              h(
+                'div',
+                { style: STYLES.sectionBox },
+                h('div', { style: STYLES.label }, t('execution.todo.label')),
+                h('div', { style: STYLES.rowTitle }, target.title),
+                target.description === ''
+                  ? null
+                  : h('div', { style: STYLES.rowDescription }, target.description),
+              ),
+              renderBody(),
             )
           }
 
@@ -945,6 +1550,9 @@ window.__ModuleLoader__.load({
               : h(
                   'div',
                   { style: STYLES.rowActions },
+                  iconButton(t('execution.action'), ICON_PLAY, () => openExecution(todo), {
+                    disabled: busy,
+                  }),
                   iconButton(
                     t('list.moveUp'),
                     ICON_UP,
@@ -1052,7 +1660,7 @@ window.__ModuleLoader__.load({
             )
           }
 
-          const addButtonDisabled = editorMode !== null || saving
+          const addButtonDisabled = editorMode !== null || saving || executionTarget !== null
           return h(
             'section',
             { style: STYLES.page, 'data-dsh-plugin': PACKAGE_ID },
@@ -1084,8 +1692,8 @@ window.__ModuleLoader__.load({
                 ),
               ),
               renderBanner(),
-              renderEditor(),
-              renderList(),
+              executionTarget === null ? renderEditor() : null,
+              executionTarget === null ? renderList() : renderExecutionPanel(),
             ),
           )
         }
