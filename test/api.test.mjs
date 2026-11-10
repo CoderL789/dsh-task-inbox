@@ -155,6 +155,10 @@ test('parseApiPayload validates execution operations', () => {
   assert.equal(parseApiPayload({ op: 'execution-status', todoId: 'todo-1' }).ok, true)
   assert.equal(parseApiPayload({ op: 'execution-abandon', executionId: 'exec-1' }).ok, true)
   assert.equal(parseApiPayload({ op: 'execution-abandon' }).ok, false)
+  assert.equal(parseApiPayload({ op: 'execution-acquire', executionId: 'exec-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-prompt-retry', executionId: 'exec-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-acquire' }).ok, false)
+  assert.equal(parseApiPayload({ op: 'execution-prompt-retry' }).ok, false)
 })
 
 test('execution operations are unavailable without the execution service', async () => {
@@ -218,6 +222,14 @@ test('execution operations map service results and service errors', async () => 
       calls.push(['abandonExecution', id])
       return { executionId: id, status: 'failed', errorCode: 'user_abandoned' }
     },
+    async acquireExecution(id) {
+      calls.push(['acquireExecution', id])
+      return { execution: { executionId: id, status: 'dispatching' }, acquired: true }
+    },
+    async authorizePromptRetry(id) {
+      calls.push(['authorizePromptRetry', id])
+      return { execution: { executionId: id, status: 'dispatching' }, authorized: false }
+    },
   }
 
   const intent = await handleOperation(
@@ -266,6 +278,22 @@ test('execution operations map service results and service errors', async () => 
     executionService,
   )
   assert.equal(abandoned.body.data.execution.errorCode, 'user_abandoned')
+
+  const acquired = await handleOperation(
+    service,
+    { op: 'execution-acquire', executionId: 'exec-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(acquired.body.data.acquired, true)
+
+  const authorized = await handleOperation(
+    service,
+    { op: 'execution-prompt-retry', executionId: 'exec-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(authorized.body.data.authorized, false)
 
   const failing = {
     async createIntent() {

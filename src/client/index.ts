@@ -201,6 +201,13 @@ interface ClientSessionsApi {
 
 interface DispatchHostApi {
   intent(input: ExecutionIntentInput): Promise<ClientExecutionRecord>
+  status(executionId: string): Promise<ClientExecutionRecord>
+  acquire(
+    executionId: string,
+  ): Promise<{ execution: ClientExecutionRecord; acquired: boolean }>
+  authorizePromptRetry(
+    executionId: string,
+  ): Promise<{ execution: ClientExecutionRecord; authorized: boolean }>
   sessionReady(executionId: string, sessionId: string): Promise<ClientExecutionRecord>
   dispatching(executionId: string): Promise<ClientExecutionRecord>
   result(
@@ -310,10 +317,16 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       'Manual binding: the Host cannot prove this Session was created by this execution. Verify it yourself before continuing.',
     'execution.dispatch.resultPending':
       'The Prompt was sent, but the Host has not confirmed the result. Check status later; do not re-create the Session.',
+    'execution.dispatch.leaseNotAcquired':
+      'Another client already owns this dispatch attempt; no Session was created here. Refresh and use recovery actions.',
+    'execution.dispatch.promptRetryNotAuthorized':
+      'The Host did not authorize a Prompt retry. Check status/candidates manually; do not create a new Session.',
     'error.execution_unresolved': 'This Todo already has an unresolved execution. Recover or abandon it first.',
     'error.abandon_not_allowed': 'An accepted execution cannot be abandoned.',
     'error.target_session_before_intent': 'The target Session predates this execution intent.',
     'error.host_result_unavailable': 'The result could not be recorded yet; verify it with status/candidates.',
+    'error.dispatch_lease_not_acquired': 'Another client owns this dispatch attempt.',
+    'error.prompt_retry_not_authorized': 'A Prompt retry was not authorized; verify manually.',
     'execution.dispatch.candidateHint':
       'Choose only if you can confirm this Session belongs to this task; binding is manual.',
     'execution.dispatch.latest': 'Existing execution for this task',
@@ -479,10 +492,16 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       '手动绑定：Host 无法证明该会话由本次执行创建，请自行确认后再继续。',
     'execution.dispatch.resultPending':
       'Prompt 已发送，但 Host 尚未确认结果。请稍后检查状态；不要重新创建会话。',
+    'execution.dispatch.leaseNotAcquired':
+      '另一个客户端已持有本次派发执行权，此处没有创建会话。请刷新并使用恢复操作。',
+    'execution.dispatch.promptRetryNotAuthorized':
+      'Host 未授权本次 Prompt 重试。请手动检查状态/候选会话；不要创建新会话。',
     'error.execution_unresolved': '该待办已有未解决的执行，请先恢复或放弃。',
     'error.abandon_not_allowed': '已接受的执行不能放弃。',
     'error.target_session_before_intent': '目标会话早于本次执行意图。',
     'error.host_result_unavailable': '结果暂时无法记录，请用“检查状态/候选会话”核实。',
+    'error.dispatch_lease_not_acquired': '另一个客户端持有本次派发执行权。',
+    'error.prompt_retry_not_authorized': '本次 Prompt 重试未获授权，请手动核实。',
     'execution.dispatch.candidateHint': '只有你确认该会话属于本任务时才绑定；绑定必须手动进行。',
     'execution.dispatch.latest': '该任务的已有执行',
     'execution.dispatch.resumeHint':
@@ -1099,16 +1118,52 @@ async function runPromptPhase(
   if (sessions === undefined) {
     return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
   }
+
+  // Always re-read the Host state first so a stale Client cannot resend a
+  // Prompt that the Host/log already proves accepted.
+  let latest: ClientExecutionRecord
+  try {
+    latest = await deps.host.status(record.executionId)
+  } catch (error) {
+    return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+  }
+  if (latest.status === 'accepted') {
+    return { status: 'accepted', execution: latest, sessionId: latest.targetSessionId }
+  }
+  if (latest.status === 'failed') {
+    return { status: 'failed', execution: latest, sessionId: latest.targetSessionId }
+  }
+  if (latest.status === 'unknown') {
+    // A normal prompt phase must not treat unknown as session_ready. Callers
+    // must use authorizePromptRetry() first, which also re-verifies the log.
+    return {
+      status: 'unknown',
+      execution: latest,
+      sessionId: latest.targetSessionId,
+      errorCode: 'prompt_retry_not_authorized',
+    }
+  }
+  if (latest.status === 'prepared') {
+    return { status: 'prepared', execution: latest, sessionId: latest.targetSessionId }
+  }
+  record = latest
+
   const sessionId = record.targetSessionId
   if (sessionId === undefined) {
     return { status: 'prepared', execution: record, message: 'No target Session was persisted.' }
   }
 
   let dispatching: ClientExecutionRecord
-  try {
-    dispatching = await deps.host.dispatching(record.executionId)
-  } catch (error) {
-    return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+  if (record.status === 'session_ready') {
+    try {
+      dispatching = await deps.host.dispatching(record.executionId)
+    } catch (error) {
+      return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+    }
+  } else if (record.status === 'dispatching') {
+    dispatching = record
+  } else {
+    return { status: record.status, execution: record, sessionId }
   }
 
   let reference: ClientSessionReference
@@ -1206,13 +1261,22 @@ async function runSessionOperation(
     return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
   }
 
-  // Persist the "dispatching" transition before any non-idempotent create/fork.
-  // If the same execution is retried later, the Host returns a non-prepared
-  // record and no second Session can be created.
+  let acquisition: { execution: ClientExecutionRecord; acquired: boolean }
   try {
-    record = await deps.host.dispatching(record.executionId)
+    acquisition = await deps.host.acquire(record.executionId)
   } catch (error) {
     return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+  }
+  record = acquisition.execution
+  if (!acquisition.acquired) {
+    // Another client owns the (or an already attempted) non-idempotent
+    // operation. Never call create/fork without acquired === true.
+    return {
+      status: record.status,
+      execution: record,
+      sessionId: record.targetSessionId,
+      errorCode: 'dispatch_lease_not_acquired',
+    }
   }
 
   let sessionId: string | undefined
@@ -1308,17 +1372,57 @@ async function resumeDispatchFlow(
   if (deps.sessions === undefined) {
     return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
   }
-  if (record.status === 'prepared') return runSessionOperation(deps, record)
-  if (record.status === 'accepted') {
-    return { status: 'accepted', execution: record, sessionId: record.targetSessionId }
+
+  // Never trust the caller's copy: refresh the Host state and the log-derived
+  // verification first. This also prevents re-sending an accepted Prompt.
+  let latest: ClientExecutionRecord
+  try {
+    latest = await deps.host.status(record.executionId)
+  } catch (error) {
+    return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
   }
-  if (record.status === 'failed') {
-    return { status: 'failed', execution: record, sessionId: record.targetSessionId }
+  if (latest.status === 'accepted') {
+    return { status: 'accepted', execution: latest, sessionId: latest.targetSessionId }
   }
-  if (record.targetSessionId === undefined) {
-    return { status: record.status, execution: record }
+  if (latest.status === 'failed') {
+    return { status: 'failed', execution: latest, sessionId: latest.targetSessionId }
   }
-  return runPromptPhase(deps, record)
+  if (latest.status === 'prepared') return runSessionOperation(deps, latest)
+  if (latest.status === 'unknown') {
+    if (latest.targetSessionId === undefined) {
+      return {
+        status: 'unknown',
+        execution: latest,
+        errorCode: 'prompt_retry_not_authorized',
+      }
+    }
+    let authorization: { execution: ClientExecutionRecord; authorized: boolean }
+    try {
+      authorization = await deps.host.authorizePromptRetry(latest.executionId)
+    } catch (error) {
+      return { status: 'error', execution: latest, errorCode: dispatchErrorCode(error) }
+    }
+    if (authorization.execution.status === 'accepted') {
+      return {
+        status: 'accepted',
+        execution: authorization.execution,
+        sessionId: authorization.execution.targetSessionId,
+      }
+    }
+    if (!authorization.authorized) {
+      return {
+        status: authorization.execution.status,
+        execution: authorization.execution,
+        sessionId: authorization.execution.targetSessionId,
+        errorCode: 'prompt_retry_not_authorized',
+      }
+    }
+    return runPromptPhase(deps, authorization.execution)
+  }
+  if (latest.status === 'session_ready' || latest.status === 'dispatching') {
+    return runPromptPhase(deps, latest)
+  }
+  return { status: latest.status, execution: latest, sessionId: latest.targetSessionId }
 }
 
 /** Retry only the Prompt phase of an already persisted target Session. */
@@ -1690,6 +1794,33 @@ window.__ModuleLoader__.load({
                       : { sourceSessionId: input.sourceSessionId }),
                   })
                 ).execution,
+              status: async (executionId) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-status',
+                    executionId,
+                  })
+                ).execution,
+              acquire: async (executionId) => {
+                const data = await callApi<{
+                  execution: ClientExecutionRecord
+                  acquired: boolean
+                }>({
+                  op: 'execution-acquire',
+                  executionId,
+                })
+                return { execution: data.execution, acquired: data.acquired }
+              },
+              authorizePromptRetry: async (executionId) => {
+                const data = await callApi<{
+                  execution: ClientExecutionRecord
+                  authorized: boolean
+                }>({
+                  op: 'execution-prompt-retry',
+                  executionId,
+                })
+                return { execution: data.execution, authorized: data.authorized }
+              },
               sessionReady: async (executionId, sessionId) =>
                 (
                   await callApi<{ execution: ClientExecutionRecord }>({
@@ -1820,7 +1951,9 @@ window.__ModuleLoader__.load({
                 setDispatchMessage(
                   outcome.errorCode === 'host_result_unavailable'
                     ? t('execution.dispatch.resultPending')
-                    : t('execution.dispatch.dispatching'),
+                    : outcome.errorCode === 'dispatch_lease_not_acquired'
+                      ? t('execution.dispatch.leaseNotAcquired')
+                      : t('execution.dispatch.dispatching'),
                 )
                 if (outcome.errorCode !== undefined && outcome.errorCode !== 'host_result_unavailable') {
                   setDispatchError(messageForCode(t, outcome.errorCode))
@@ -1892,11 +2025,16 @@ window.__ModuleLoader__.load({
                   : outcome.status === 'dispatching'
                     ? outcome.errorCode === 'host_result_unavailable'
                       ? t('execution.dispatch.resultPending')
-                      : t('execution.dispatch.dispatching')
+                      : outcome.errorCode === 'dispatch_lease_not_acquired'
+                        ? t('execution.dispatch.leaseNotAcquired')
+                        : t('execution.dispatch.dispatching')
                     : outcome.status === 'failed'
                       ? t('execution.dispatch.failed')
                       : t('execution.dispatch.unknown'),
               )
+              if (outcome.errorCode === 'prompt_retry_not_authorized') {
+                setDispatchMessage(t('execution.dispatch.promptRetryNotAuthorized'))
+              }
               if (outcome.errorCode !== undefined) setDispatchError(messageForCode(t, outcome.errorCode))
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))

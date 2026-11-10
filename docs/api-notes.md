@@ -710,3 +710,10 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - **状态机一致性**：`beginDispatching` / `markSessionReady` / `reportPromptResult` / `markUnknown` / `markFailed` / `getStatus` / `bindCandidate` / `abandonExecution` 的状态判断与写入均移到串行化 mutation 内；accepted 拒绝迟到 failed/unknown；目标已绑定时拒绝替换；unknown 可由日志核验升为 accepted；无目标 dispatching 需超过 `DISPATCH_INTERRUPT_GRACE_MS`（120 秒）才转为 `dispatch_interrupted`，避免其他窗口轮询误判。
 - **绑定校验**：new/fork 目标必须晚于 intent 创建；复用必须为来源 Session；目标不得被其他执行占用；人工候选按原策略复核（new 需 blank、fork 非 blank 且不得为 source、reuse 不允许候选），记录 `bindingSource: manual`，UI 明确提示 Host 无法证明创建来源。
 - **测试**：129/129；新增并发 intent、accepted 并发保护、目标不可覆盖、宽限期、网络错误码歧义、Host 回执失败、刷新恢复、放弃限制、人工绑定策略校验等用例。
+
+### 7. 第二轮代码审查修复（2026-11-10，版本 0.4.2）
+
+- **执行权租约**：新增 `execution-acquire`。Host 在串行化 mutation 内仅当状态为 `prepared` 时切换为 `dispatching`，并写入 `dispatchLeaseToken`、`dispatchLeaseAcquiredAt`、`dispatchLeaseExpiresAt`（120s），返回 `{ execution, acquired }`；并发/重试调用得到 `acquired: false`，不得调用 create/fork。租约过期不会重新发放（重启/超时后只能走 unknown/人工恢复）。Client 编排检查 `acquired`，不是仅凭 `status === 'dispatching'`。
+- **clientRequestId 完整比较**：intent 幂等匹配在 mutation 内再次比较 `todoId / workspaceId / strategy / sourceSessionId`；相同 id 不同参数返回 `execution_conflict`，不会返回其他 Todo/Workspace 的执行记录。
+- **unknown 安全 Prompt 重试**：新增 `execution-prompt-retry`。Host 先只读 Session 日志核验 `requestId`：已 accepted 则升级并返回 `authorized: false`；否则仅一个调用者获得 `authorized: true` 并 unknown→dispatching，严格复用记录中的 executionId/targetSessionId/requestId/promptText，永不 create/fork。Client 恢复前先 `execution-status` 刷新；Prompt 阶段再次查询 Host，accepted/failed 不再发送；未授权保持 unknown。
+- **测试**：139/139；新增并发抢权（create/fork 最多一次）、相同 clientRequestId 不同参数并发冲突、unknown+target 恢复、迟到 accepted 不重发、并发恢复、Prompt 回执丢失等。

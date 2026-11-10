@@ -645,3 +645,137 @@ test('candidates are marked as manual bindings', async () => {
   assert.equal(candidates[0].manualBinding, true)
 })
 
+// ---------------------------------------------------------------------------
+// Review round 2: exclusive dispatch lease, full intent comparison, safe
+// unknown Prompt retry
+// ---------------------------------------------------------------------------
+
+test('concurrent acquire yields exactly one non-idempotent execution right', async () => {
+  const { service, store, advance } = makeHarness()
+  const record = await service.createIntent(newIntent())
+
+  const [first, second] = await Promise.all([
+    service.acquireExecution(record.executionId),
+    service.acquireExecution(record.executionId),
+  ])
+  assert.equal([first.acquired, second.acquired].filter(Boolean).length, 1)
+  assert.equal(store.records[0].status, 'dispatching')
+  assert.equal(typeof store.records[0].dispatchLeaseToken, 'string')
+  assert.equal(typeof store.records[0].dispatchLeaseExpiresAt, 'string')
+
+  // The state switch can never be acquired again, not even after timeout.
+  const again = await service.acquireExecution(record.executionId)
+  assert.equal(again.acquired, false)
+
+  advance(121_000)
+  const aged = await service.getStatus(record.executionId)
+  assert.equal(aged.status, 'unknown')
+  const afterTimeout = await service.acquireExecution(record.executionId)
+  assert.equal(afterTimeout.acquired, false)
+})
+
+test('after acquisition, acquiring the same execution again is denied', async () => {
+  const { service, store } = makeHarness()
+  const record = await service.createIntent(newIntent())
+  const first = await service.acquireExecution(record.executionId)
+  assert.equal(first.acquired, true)
+  const second = await service.acquireExecution(record.executionId)
+  assert.equal(second.acquired, false)
+  assert.equal(store.records[0].status, 'dispatching')
+  assert.equal(store.records.length, 1)
+})
+
+test('same clientRequestId with different parameters is a conflict, not another execution', async () => {
+  const { service, store } = makeHarness({
+    todos: [todo(), todo({ id: 'todo-2', title: 'Other' })],
+  })
+  const outcomes = await Promise.allSettled([
+    service.createIntent(newIntent({ clientRequestId: 'same-id', todoId: 'todo-1' })),
+    service.createIntent(newIntent({ clientRequestId: 'same-id', todoId: 'todo-2' })),
+  ])
+  const fulfilled = outcomes.filter((entry) => entry.status === 'fulfilled')
+  const rejected = outcomes.filter((entry) => entry.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  assert.equal(rejected[0].reason.code, 'execution_conflict')
+  assert.equal(store.records.length, 1)
+  assert.equal(store.records[0].todoId, fulfilled[0].value.todoId)
+
+  // Same id/same parameters is still idempotent.
+  const same = await service.createIntent(
+    newIntent({
+      clientRequestId: 'same-id',
+      todoId: store.records[0].todoId,
+    }),
+  )
+  assert.equal(same.executionId, store.records[0].executionId)
+
+  // Different source Session / strategy must also conflict.
+  await assert.rejects(
+    service.createIntent(
+      newIntent({
+        clientRequestId: 'same-id',
+        todoId: store.records[0].todoId,
+        strategy: 'reuse',
+        sourceSessionId: 'session-src',
+      }),
+    ),
+    (error) => error.code === 'execution_conflict',
+  )
+
+  // Different Workspace must conflict before returning a record with the wrong
+  // workspace.
+  await assert.rejects(
+    service.createIntent(
+      newIntent({
+        clientRequestId: 'same-id',
+        todoId: store.records[0].todoId,
+        workspaceId: 'ws-other',
+      }),
+    ),
+    (error) => error.code === 'execution_conflict',
+  )
+})
+
+test('authorizePromptRetry authorizes only one safe retry for unknown', async () => {
+  const { service, store } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+    ],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.markUnknown(record.executionId, 'prompt/timeout')
+
+  const [first, second] = await Promise.all([
+    service.authorizePromptRetry(record.executionId),
+    service.authorizePromptRetry(record.executionId),
+  ])
+  assert.equal([first.authorized, second.authorized].filter(Boolean).length, 1)
+  assert.equal(store.records[0].status, 'dispatching')
+})
+
+test('authorizePromptRetry never authorizes when the log already proves acceptance', async () => {
+  const eventsById = {
+    'session-src': [{ type: 'turn/start' }],
+    'session-new': [{ type: 'user/message', data: { source: { rpcId: 'req-1' } } }],
+  }
+  const { service, store } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+    ],
+    eventsById,
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.markUnknown(record.executionId, 'prompt/timeout')
+
+  const authorization = await service.authorizePromptRetry(record.executionId)
+  assert.equal(authorization.authorized, false)
+  assert.equal(authorization.execution.status, 'accepted')
+  assert.equal(store.records[0].status, 'accepted')
+})
+

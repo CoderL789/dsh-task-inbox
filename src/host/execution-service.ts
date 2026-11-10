@@ -39,6 +39,8 @@ export interface ExecutionClock {
 export interface ExecutionIdFactory {
   executionId(): string
   requestId(): string
+  /** Optional lease-token generator; falls back to executionId(). */
+  leaseToken?(): string
 }
 
 export interface ExecutionServiceOptions {
@@ -113,6 +115,18 @@ export interface PromptResultReport {
   errorCode?: string
 }
 
+export interface ExecutionAcquisition {
+  execution: ExecutionRecord
+  /** True only for the caller that switched prepared -> dispatching. */
+  acquired: boolean
+}
+
+export interface PromptRetryAuthorization {
+  execution: ExecutionRecord
+  /** True only for the caller that moved unknown -> dispatching for a safe retry. */
+  authorized: boolean
+}
+
 export interface UnknownCandidate {
   sessionId: string
   createdAt?: number
@@ -124,6 +138,27 @@ export interface UnknownCandidate {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function normalizeSessionId(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value
+}
+
+function sameIntentParameters(
+  record: ExecutionRecord,
+  input: {
+    todoId: string
+    strategy: ExecutionStrategy
+    workspaceId: string
+    sourceSessionId?: string
+  },
+): boolean {
+  return (
+    record.todoId === input.todoId &&
+    record.strategy === input.strategy &&
+    record.workspaceId === input.workspaceId &&
+    normalizeSessionId(record.sourceSessionId) === normalizeSessionId(input.sourceSessionId)
+  )
 }
 
 function classifyTargetStrategy(strategy: ExecutionStrategy): void {
@@ -151,12 +186,19 @@ export class ExecutionService {
     }
     const typedStrategy = strategy as ExecutionStrategy
 
-    // Idempotency is keyed by the Client-generated intent id and takes
-    // precedence over re-validation, so a retried HTTP call returns the
-    // original record instead of creating a second execution.
+    // Idempotency is keyed by the Client-generated intent id. A retried HTTP
+    // call must match every business parameter, otherwise it is a conflict —
+    // not a request to return a different Todo/Workspace execution.
     const existing = this.findByClientRequestId(clientRequestId)
     if (existing !== undefined) {
-      if (existing.todoId !== todoId || existing.strategy !== typedStrategy || existing.workspaceId !== workspaceId) {
+      if (
+        !sameIntentParameters(existing, {
+          todoId,
+          strategy: typedStrategy,
+          workspaceId,
+          sourceSessionId,
+        })
+      ) {
         throw new ExecutionServiceError('execution_conflict', 'This intent id was already used with different dispatch parameters.')
       }
       return existing
@@ -197,6 +239,19 @@ export class ExecutionService {
     return this.durable(() => this.options.store.mutate((current) => {
       const duplicate = current.find((entry) => entry.clientRequestId === clientRequestId)
       if (duplicate !== undefined) {
+        if (
+          !sameIntentParameters(duplicate, {
+            todoId,
+            strategy: typedStrategy,
+            workspaceId,
+            sourceSessionId,
+          })
+        ) {
+          throw new ExecutionServiceError(
+            'execution_conflict',
+            'This intent id was already used with different dispatch parameters.',
+          )
+        }
         return { next: current, result: duplicate }
       }
       // Server-side duplicate protection: a Todo with an unresolved execution
@@ -357,6 +412,87 @@ export class ExecutionService {
       if (current.status === 'failed') return current
       return { ...current, status: 'failed', errorCode }
     })
+  }
+
+  /**
+   * Acquire the exclusive right to run the non-idempotent create/fork for an
+   * execution. Only the caller whose mutation switches prepared -> dispatching
+   * gets `acquired: true` and may call `sessions.create/fork`. A concurrent or
+   * retried caller receives the existing record with `acquired: false` and must
+   * not perform a Session operation. The lease is never re-issued: after
+   * restart/timeout the execution must go through unknown/recovery instead.
+   */
+  async acquireExecution(executionId: string): Promise<ExecutionAcquisition> {
+    return this.durable(() => this.options.store.mutate<ExecutionAcquisition>((current) => {
+      const index = current.findIndex((entry) => entry.executionId === executionId)
+      if (index === -1) throw new ExecutionServiceError('execution_not_found', 'Execution was not found.')
+      const record = current[index]
+      if (record.status !== 'prepared') {
+        return { next: current, result: { execution: record, acquired: false } }
+      }
+      const nowMs = this.options.clock.epochMs()
+      const now = this.options.clock.isoNow()
+      const token =
+        this.options.ids.leaseToken?.() ?? this.options.ids.executionId()
+      const acquired: ExecutionRecord = {
+        ...record,
+        status: 'dispatching',
+        dispatchLeaseToken: token,
+        dispatchLeaseAcquiredAt: now,
+        dispatchLeaseExpiresAt: new Date(nowMs + DISPATCH_INTERRUPT_GRACE_MS).toISOString(),
+        updatedAt: now,
+      }
+      const next = current.slice()
+      next[index] = acquired
+      return { next, result: { execution: acquired, acquired: true } }
+    }))
+  }
+
+  /**
+   * Authorize a safe Prompt retry for an unknown execution. The Host first
+   * verifies the stored Session log: if the prompt is already accepted, it is
+   * promoted and NO retry is authorized. Otherwise exactly one caller may move
+   * unknown -> dispatching and retry with the SAME executionId, target Session,
+   * requestId and immutable prompt snapshot; create/fork is never involved.
+   */
+  async authorizePromptRetry(executionId: string): Promise<PromptRetryAuthorization> {
+    const record = this.requireRecord(executionId)
+    if (
+      record.status === 'accepted' ||
+      record.status === 'failed' ||
+      record.status === 'dispatching' ||
+      record.targetSessionId === undefined
+    ) {
+      return { execution: record, authorized: false }
+    }
+    if (record.status !== 'unknown') return { execution: record, authorized: false }
+
+    const verified = await this.verifyPromptAccepted(record)
+    if (verified === 'accepted') {
+      const accepted = await this.transition(executionId, (current) => {
+        if (current.status === 'accepted') return current
+        if (current.status !== 'unknown' && current.status !== 'dispatching') return current
+        return { ...current, status: 'accepted', errorCode: undefined }
+      })
+      return { execution: accepted, authorized: false }
+    }
+
+    return this.durable(() => this.options.store.mutate<PromptRetryAuthorization>((current) => {
+      const index = current.findIndex((entry) => entry.executionId === executionId)
+      if (index === -1) throw new ExecutionServiceError('execution_not_found', 'Execution was not found.')
+      const currentRecord = current[index]
+      if (currentRecord.status !== 'unknown' || currentRecord.targetSessionId === undefined) {
+        return { next: current, result: { execution: currentRecord, authorized: false } }
+      }
+      const authorized: ExecutionRecord = {
+        ...currentRecord,
+        status: 'dispatching',
+        updatedAt: this.options.clock.isoNow(),
+      }
+      const next = current.slice()
+      next[index] = authorized
+      return { next, result: { execution: authorized, authorized: true } }
+    }))
   }
 
   /** Read status, opportunistically verifying a pending prompt from the log. */
@@ -776,7 +912,6 @@ function readOptionalString(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined
   return typeof value === 'string' && value.length <= 128 ? value : undefined
 }
-
 /** Immutable prompt snapshot: title plus optional description. */
 export function buildPromptSnapshot(todo: Pick<Todo, 'title' | 'description'>): string {
   return todo.description === '' ? todo.title : `${todo.title}\n\n${todo.description}`

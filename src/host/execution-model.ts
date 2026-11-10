@@ -43,6 +43,10 @@ export interface ExecutionRecord {
   targetSessionId?: string
   /** How the target Session was associated: Client-reported or manual candidate. */
   bindingSource?: 'client' | 'manual'
+  /** Exclusive right to perform the non-idempotent create/fork. */
+  dispatchLeaseToken?: string
+  dispatchLeaseAcquiredAt?: string
+  dispatchLeaseExpiresAt?: string
   status: ExecutionStatus
   errorCode?: string
   createdAt: string
@@ -73,6 +77,9 @@ export const EXECUTION_RECORD_SCHEMA = z.object({
   sourceSessionId: z.string().min(1).max(128).optional(),
   targetSessionId: z.string().min(1).max(128).optional(),
   bindingSource: z.enum(['client', 'manual']).optional(),
+  dispatchLeaseToken: z.string().min(1).max(128).optional(),
+  dispatchLeaseAcquiredAt: z.string().min(1).optional(),
+  dispatchLeaseExpiresAt: z.string().min(1).optional(),
   status: z.enum(['prepared', 'session_ready', 'dispatching', 'accepted', 'failed', 'unknown']),
   errorCode: z.string().max(128).optional(),
   createdAt: z.string().min(1),

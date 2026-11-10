@@ -1,6 +1,13 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.1 完成第一轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1 记录最终实现与草案的差异。
+> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.2 完成第二轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1/§0.2 记录实现与修复差异。
+
+## 0.3 第二轮代码审查修复（0.4.2）
+
+- **非幂等操作独占执行权**：新增 `execution-acquire`，Host 串行化 mutation 内仅 prepared→dispatching 的调用者获得 `acquired: true` 与租约 token（120s 过期，不重新发放）；其他并发/重试调用只得到现有状态，Client 不得继续 create/fork。重启/超时后只能经 unknown/恢复，不可重新抢权。
+- **clientRequestId 完整幂等**：mutation 内重复 id 再次比较 todoId/workspaceId/strategy/sourceSessionId；相同参数返回原记录，不同参数返回 `execution_conflict`。
+- **unknown Prompt 恢复**：新增 `execution-prompt-retry`；先只读日志核验，已 accepted 则升级不再发送；否则仅一个调用者获得授权，严格用记录中的 executionId/targetSessionId/requestId/promptText 重试，永不 create/fork；Client 在恢复及 Prompt 前都重新查询 Host 状态，过期状态不会重发 accepted 任务。
+- 测试 139/139（并发抢权、完整幂等冲突、unknown+target、迟到 accepted、并发恢复、回执丢失等）。
 
 ## 0.2 第一轮代码审查修复（0.4.1）
 

@@ -50,6 +50,8 @@ export type ApiOperation =
     }
   | { op: 'execution-session'; executionId: string; sessionId: string }
   | { op: 'execution-dispatching'; executionId: string }
+  | { op: 'execution-acquire'; executionId: string }
+  | { op: 'execution-prompt-retry'; executionId: string }
   | { op: 'execution-result'; executionId: string; outcome: 'accepted' | 'failed' | 'unknown'; errorCode?: string }
   | { op: 'execution-status'; executionId?: string; todoId?: string }
   | { op: 'execution-candidates'; executionId: string }
@@ -145,6 +147,8 @@ export function parseApiPayload(payload: unknown): ParseResult {
       return { ok: true, operation: { op, executionId, sessionId } }
     }
     case 'execution-dispatching':
+    case 'execution-acquire':
+    case 'execution-prompt-retry':
     case 'execution-candidates': {
       const executionId = readStringField(payload, 'executionId')
       if (executionId === undefined) {
@@ -317,6 +321,32 @@ export async function handleOperation(
         }
         const execution = await executionService.beginDispatching(operation.executionId)
         return success({ execution })
+      }
+      case 'execution-acquire': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        if (typeof executionService.acquireExecution !== 'function') {
+          return failure('execution_unavailable', 'Execution acquisition is not available.')
+        }
+        const acquisition = await executionService.acquireExecution(operation.executionId)
+        return success({
+          execution: acquisition.execution,
+          acquired: acquisition.acquired,
+        })
+      }
+      case 'execution-prompt-retry': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        if (typeof executionService.authorizePromptRetry !== 'function') {
+          return failure('execution_unavailable', 'Prompt retry authorization is not available.')
+        }
+        const authorization = await executionService.authorizePromptRetry(operation.executionId)
+        return success({
+          execution: authorization.execution,
+          authorized: authorization.authorized,
+        })
       }
       case 'execution-result': {
         if (executionService === undefined) {
