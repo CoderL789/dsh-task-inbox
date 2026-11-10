@@ -701,3 +701,12 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - `pnpm build` / `typecheck` / `check` / `test` 通过，**111/111**：含执行意图幂等/冲突、Todo/Workspace/Session 重新校验、状态机、日志 requestId 核验（Client 误报 accepted / 漏报 accepted）、Fork 候选绑定、存储失败、Client 编排 mock `ctx.sessions`（新建/复用/Fork、确定/不确定失败、关联持久化失败、retain ready 失败、Prompt 拒绝/抛错、继续派发、重复 intent）。
 - **未执行**：真实创建/Fork/恢复 Session、真实 Prompt、真实 GUI 验收、刷新/重启恢复；未调用 `plugin_manager`、未提交/推送。
 - **依赖风险**：Client `ctx.sessions.create/fork` 与 `SessionFace.prompt` 属随 `0.2.2-rc.1` 发布的 Client 契约（未出现在 Inspect 方法目录，但见 `ISessions` 类型与构建实现）；升级 DSH 需回归。Host 侧 public API 无法预检 archive/completed-turn，由真实 Remote prompt 最终裁决。
+
+### 6. 第一轮代码审查修复（2026-11-10，版本 0.4.1）
+
+- **服务端防重**：`execution-intent` 在同一 Todo 有未解决执行（prepared/session_ready/dispatching/unknown）时返回 `execution_unresolved`；检查在串行化 store mutation 内完成，并发/跨窗口 intent 只成功一个。新增 `execution-abandon`（二次确认语义由 UI 承担）用于显式放弃；在途 `dispatching` 不允许放弃，已创建 Session 保留并记录 `user_abandoned_session_kept`。
+- **异常分类**：Client 仅在明确的业务拒绝码（`session/conflict`、`session/agent-busy`、`session/provider-models-unavailable`、`session/not-found`、`remote-access/denied` 等）下认定 create/fork 确定失败；网络超时/连接中断即使带 `code` 也按 unknown 处理并禁止自动重试。
+- **Prompt 已接受 + Host 回执失败**：Client 捕获 Host result 请求异常，返回 `dispatching` + `host_result_unavailable`，保留 executionId/requestId/targetSessionId；Host 记录保持待核验，页面刷新后可 `execution-status` 只读日志核验（`user/message.source.rpcId`），不会重新创建 Session。
+- **状态机一致性**：`beginDispatching` / `markSessionReady` / `reportPromptResult` / `markUnknown` / `markFailed` / `getStatus` / `bindCandidate` / `abandonExecution` 的状态判断与写入均移到串行化 mutation 内；accepted 拒绝迟到 failed/unknown；目标已绑定时拒绝替换；unknown 可由日志核验升为 accepted；无目标 dispatching 需超过 `DISPATCH_INTERRUPT_GRACE_MS`（120 秒）才转为 `dispatch_interrupted`，避免其他窗口轮询误判。
+- **绑定校验**：new/fork 目标必须晚于 intent 创建；复用必须为来源 Session；目标不得被其他执行占用；人工候选按原策略复核（new 需 blank、fork 非 blank 且不得为 source、reuse 不允许候选），记录 `bindingSource: manual`，UI 明确提示 Host 无法证明创建来源。
+- **测试**：129/129；新增并发 intent、accepted 并发保护、目标不可覆盖、宽限期、网络错误码歧义、Host 回执失败、刷新恢复、放弃限制、人工绑定策略校验等用例。

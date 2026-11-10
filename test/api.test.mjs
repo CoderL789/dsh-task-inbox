@@ -153,6 +153,8 @@ test('parseApiPayload validates execution operations', () => {
     true,
   )
   assert.equal(parseApiPayload({ op: 'execution-status', todoId: 'todo-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-abandon', executionId: 'exec-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-abandon' }).ok, false)
 })
 
 test('execution operations are unavailable without the execution service', async () => {
@@ -212,6 +214,10 @@ test('execution operations map service results and service errors', async () => 
       calls.push(['markFailed', id, errorCode])
       return { executionId: id, status: 'failed' }
     },
+    async abandonExecution(id) {
+      calls.push(['abandonExecution', id])
+      return { executionId: id, status: 'failed', errorCode: 'user_abandoned' }
+    },
   }
 
   const intent = await handleOperation(
@@ -252,6 +258,14 @@ test('execution operations map service results and service errors', async () => 
     executionService,
   )
   assert.equal(candidates.body.data.candidates[0].sessionId, 'session-candidate')
+
+  const abandoned = await handleOperation(
+    service,
+    { op: 'execution-abandon', executionId: 'exec-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(abandoned.body.data.execution.errorCode, 'user_abandoned')
 
   const failing = {
     async createIntent() {

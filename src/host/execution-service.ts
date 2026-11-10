@@ -57,7 +57,9 @@ export type ExecutionServiceErrorCode =
   | 'invalid_payload'
   | 'execution_not_found'
   | 'execution_conflict'
+  | 'execution_unresolved'
   | 'invalid_transition'
+  | 'abandon_not_allowed'
   | 'todo_not_found'
   | 'workspace_not_found'
   | 'workspace_unavailable'
@@ -70,10 +72,23 @@ export type ExecutionServiceErrorCode =
   | 'target_session_wrong_workspace'
   | 'target_session_not_blank'
   | 'target_session_already_bound'
+  | 'target_session_before_intent'
   | 'candidate_not_found'
   | 'verification_unavailable'
   | 'storage_failed'
   | 'storage_uncertain'
+
+/** How long a target-less dispatching record may stay unresolved before a
+ * status query may treat it as interrupted. Prevents another window's poll
+ * from marking an in-flight create/fork as unknown. */
+export const DISPATCH_INTERRUPT_GRACE_MS = 120_000
+
+export const UNRESOLVED_STATUSES: readonly ExecutionStatus[] = [
+  'prepared',
+  'session_ready',
+  'dispatching',
+  'unknown',
+]
 
 export class ExecutionServiceError extends Error {
   readonly code: ExecutionServiceErrorCode
@@ -103,6 +118,8 @@ export interface UnknownCandidate {
   createdAt?: number
   blankState: 'blank' | 'non-blank' | 'unknown'
   title?: string
+  /** Host cannot prove creation lineage; binding must be confirmed by the user. */
+  manualBinding: true
 }
 
 function describe(error: unknown): string {
@@ -182,15 +199,33 @@ export class ExecutionService {
       if (duplicate !== undefined) {
         return { next: current, result: duplicate }
       }
+      // Server-side duplicate protection: a Todo with an unresolved execution
+      // cannot start another one, even from another window/tab. The user must
+      // first recover or explicitly abandon the unresolved execution.
+      const unresolved = current.find(
+        (entry) => entry.todoId === todoId && UNRESOLVED_STATUSES.includes(entry.status),
+      )
+      if (unresolved !== undefined) {
+        throw new ExecutionServiceError(
+          'execution_unresolved',
+          `This Todo already has an unresolved execution (${unresolved.executionId}). ` +
+            'Recover it or explicitly abandon it before starting a new execution.',
+        )
+      }
       return { next: [...current, record], result: record }
     }))
   }
 
   async markSessionReady(executionId: string, sessionId: string): Promise<ExecutionRecord> {
     const existing = this.requireRecord(executionId)
-    if (existing.targetSessionId === sessionId && existing.status !== 'prepared') return existing
-    if (existing.status !== 'prepared' && existing.status !== 'dispatching' && existing.status !== 'unknown') {
-      throw new ExecutionServiceError('invalid_transition', 'Only a prepared/dispatching/unknown execution can record a target Session.')
+    if (existing.targetSessionId === sessionId) return existing
+    if (
+      existing.status !== 'prepared' &&
+      existing.status !== 'session_ready' &&
+      existing.status !== 'dispatching' &&
+      existing.status !== 'unknown'
+    ) {
+      throw new ExecutionServiceError('invalid_transition', 'This execution cannot record a target Session.')
     }
 
     const workspace = await this.requireWorkspace(existing.workspaceId)
@@ -201,23 +236,51 @@ export class ExecutionService {
       if (blankState !== 'blank') {
         throw new ExecutionServiceError('target_session_not_blank', 'The new Session must still be blank before its first prompt.')
       }
+      this.assertCreatedAfterIntent(existing, snapshot, 'target_session_before_intent')
     } else if (existing.strategy === 'reuse') {
       if (existing.sourceSessionId !== sessionId) {
-        throw new ExecutionServiceError('target_session_wrong_workspace', 'Reuse must dispatch into the selected source Session.')
+        throw new ExecutionServiceError(
+          'target_session_wrong_workspace',
+          'Reuse must dispatch into the selected source Session.',
+        )
       }
-    }
-    if (existing.strategy === 'fork') {
-      if (existing.sourceSessionId === sessionId) {
-        throw new ExecutionServiceError('target_session_already_bound', 'A fork target must be the new child Session.')
-      }
+    } else if (existing.sourceSessionId === sessionId) {
+      throw new ExecutionServiceError('target_session_already_bound', 'A fork target must be the new child Session.')
+    } else {
+      this.assertCreatedAfterIntent(existing, snapshot, 'target_session_before_intent')
     }
 
-    return this.updateRecord(existing.executionId, (current) => ({
-      ...current,
-      targetSessionId: sessionId,
-      status: 'session_ready',
-      errorCode: undefined,
-    }))
+    return this.transition(executionId, (current, all) => {
+      if (current.status === 'accepted') return current
+      if (current.targetSessionId !== undefined) {
+        if (current.targetSessionId === sessionId) return current
+        throw new ExecutionServiceError(
+          'target_session_already_bound',
+          'This execution already has a different target Session.',
+        )
+      }
+      if (
+        current.status !== 'prepared' &&
+        current.status !== 'session_ready' &&
+        current.status !== 'dispatching' &&
+        current.status !== 'unknown'
+      ) {
+        throw new ExecutionServiceError('invalid_transition', 'This execution cannot record a target Session.')
+      }
+      if (this.boundElsewhere(all, sessionId, executionId)) {
+        throw new ExecutionServiceError(
+          'target_session_already_bound',
+          'This Session is already bound to another execution.',
+        )
+      }
+      return {
+        ...current,
+        targetSessionId: sessionId,
+        status: 'session_ready',
+        bindingSource: 'client',
+        errorCode: undefined,
+      }
+    })
   }
 
   /**
@@ -227,12 +290,16 @@ export class ExecutionService {
    * Client to create a second Session.
    */
   async beginDispatching(executionId: string): Promise<ExecutionRecord> {
-    const existing = this.requireRecord(executionId)
-    if (existing.status === 'dispatching' || existing.status === 'accepted') return existing
-    if (existing.status !== 'prepared' && existing.status !== 'session_ready') {
-      throw new ExecutionServiceError('invalid_transition', 'Only prepared or session_ready executions can start dispatching.')
-    }
-    return this.updateRecord(executionId, (current) => ({ ...current, status: 'dispatching' }))
+    return this.transition(executionId, (current) => {
+      if (current.status === 'dispatching' || current.status === 'accepted') return current
+      if (current.status !== 'prepared' && current.status !== 'session_ready') {
+        throw new ExecutionServiceError(
+          'invalid_transition',
+          'Only prepared or session_ready executions can start dispatching.',
+        )
+      }
+      return { ...current, status: 'dispatching' }
+    })
   }
 
   async reportPromptResult(
@@ -244,6 +311,12 @@ export class ExecutionService {
     if (report.outcome !== 'accepted' && report.outcome !== 'failed' && report.outcome !== 'unknown') {
       throw new ExecutionServiceError('invalid_payload', 'Unknown prompt result outcome.')
     }
+    if (existing.targetSessionId === undefined) {
+      throw new ExecutionServiceError(
+        'invalid_transition',
+        'A Prompt result cannot be recorded before the target Session is persisted.',
+      )
+    }
 
     const verified = await this.verifyPromptAccepted(existing)
     let status: ExecutionStatus
@@ -252,49 +325,103 @@ export class ExecutionService {
     else if (report.outcome === 'failed') status = 'failed'
     else status = 'unknown'
 
-    return this.updateRecord(executionId, (current) => ({
-      ...current,
-      status,
-      errorCode: status === 'accepted' ? undefined : report.errorCode,
-    }))
+    // Late failed/unknown callbacks must never overwrite an accepted record.
+    return this.transition(executionId, (current) => {
+      if (current.status === 'accepted') return current
+      if (current.status === 'prepared') {
+        throw new ExecutionServiceError(
+          'invalid_transition',
+          'A Prompt result cannot be recorded before a Session is prepared for dispatch.',
+        )
+      }
+      if (current.status === 'failed' && status !== 'accepted') return current
+      return {
+        ...current,
+        status,
+        errorCode: status === 'accepted' ? undefined : report.errorCode,
+      }
+    })
   }
 
   async markUnknown(executionId: string, errorCode?: string): Promise<ExecutionRecord> {
-    const existing = this.requireRecord(executionId)
-    if (existing.status === 'accepted') return existing
-    return this.updateRecord(executionId, (current) => ({
-      ...current,
-      status: 'unknown',
-      errorCode,
-    }))
+    return this.transition(executionId, (current) => {
+      if (current.status === 'accepted') return current
+      if (current.status === 'failed') return current
+      return { ...current, status: 'unknown', errorCode }
+    })
   }
 
   async markFailed(executionId: string, errorCode?: string): Promise<ExecutionRecord> {
-    const existing = this.requireRecord(executionId)
-    if (existing.status === 'accepted') return existing
-    return this.updateRecord(executionId, (current) => ({
-      ...current,
-      status: 'failed',
-      errorCode,
-    }))
+    return this.transition(executionId, (current) => {
+      if (current.status === 'accepted') return current
+      if (current.status === 'failed') return current
+      return { ...current, status: 'failed', errorCode }
+    })
   }
 
   /** Read status, opportunistically verifying a pending prompt from the log. */
   async getStatus(executionId: string): Promise<ExecutionRecord> {
     const existing = this.requireRecord(executionId)
-    if (existing.status !== 'dispatching') return existing
-    if (existing.targetSessionId === undefined) {
-      // Interrupted during create/fork. Never let the Client re-create/fork
-      // automatically; surface it as unknown with the candidate UI.
-      return this.updateRecord(executionId, (current) => ({
-        ...current,
-        status: 'unknown',
-        errorCode: 'dispatch_interrupted',
-      }))
+    if (existing.status === 'accepted') return existing
+
+    if (existing.status === 'unknown' && existing.targetSessionId !== undefined) {
+      const verified = await this.verifyPromptAccepted(existing)
+      if (verified === 'accepted') {
+        return this.transition(executionId, (current) => {
+          if (current.status === 'accepted') return current
+          if (current.status !== 'unknown' && current.status !== 'dispatching') return current
+          return { ...current, status: 'accepted', errorCode: undefined }
+        })
+      }
+      return existing
     }
+    if (existing.status !== 'dispatching') return existing
+
+    if (existing.targetSessionId === undefined) {
+      // A concurrent create/fork may still be running. Only an aged record can
+      // be treated as interrupted; otherwise a status poll would incorrectly
+      // mark in-flight work as unknown.
+      if (!this.interruptGraceElapsed(existing)) return existing
+      return this.transition(executionId, (current) => {
+        if (current.status !== 'dispatching' || current.targetSessionId !== undefined) return current
+        if (!this.interruptGraceElapsed(current)) return current
+        return { ...current, status: 'unknown', errorCode: 'dispatch_interrupted' }
+      })
+    }
+
     const verified = await this.verifyPromptAccepted(existing)
     if (verified !== 'accepted') return existing
-    return this.updateRecord(executionId, (current) => ({ ...current, status: 'accepted', errorCode: undefined }))
+    return this.transition(executionId, (current) => {
+      if (current.status === 'accepted') return current
+      if (current.status !== 'dispatching' && current.status !== 'unknown') return current
+      return { ...current, status: 'accepted', errorCode: undefined }
+    })
+  }
+
+  /**
+   * Explicitly give up an unresolved execution so a brand-new independent
+   * execution may be created. Never allowed for accepted records; a created
+   * Session is kept (never deleted) and the record says so.
+   */
+  async abandonExecution(executionId: string): Promise<ExecutionRecord> {
+    return this.transition(executionId, (current) => {
+      if (current.status === 'accepted') {
+        throw new ExecutionServiceError('abandon_not_allowed', 'An accepted execution cannot be abandoned.')
+      }
+      if (current.status === 'dispatching') {
+        throw new ExecutionServiceError(
+          'invalid_transition',
+          'An in-flight dispatch cannot be abandoned; check its status first.',
+        )
+      }
+      if (current.status === 'failed') return current
+      return {
+        ...current,
+        status: 'failed',
+        errorCode:
+          current.targetSessionId === undefined ? 'user_abandoned' : 'user_abandoned_session_kept',
+      }
+    })
   }
 
   listForTodo(todoId: string): ExecutionRecord[] {
@@ -310,14 +437,20 @@ export class ExecutionService {
     if (record.status !== 'unknown') {
       throw new ExecutionServiceError('invalid_transition', 'Candidates are only listed for unknown outcomes.')
     }
+    if (record.strategy === 'reuse') {
+      throw new ExecutionServiceError(
+        'invalid_transition',
+        'Reuse executions always target their source Session and have no candidates.',
+      )
+    }
     const persistence = this.options.sessionPersistence
     if (persistence === undefined) {
       throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
     }
     const snapshots = await persistence.list()
+    const currentRecords = this.options.store.read()
     const bound = new Set(
-      this.options.store
-        .read()
+      currentRecords
         .filter((entry) => entry.executionId !== record.executionId && entry.targetSessionId !== undefined)
         .map((entry) => entry.targetSessionId as string),
     )
@@ -329,11 +462,17 @@ export class ExecutionService {
       if (snapshot.header.origin === 'subagent') continue
       if (snapshot.header.cwd !== record.workspacePath) continue
       if (typeof snapshot.header.createdAt === 'number' && snapshot.header.createdAt < record.createdAtMs) continue
+      const blankState = await this.blankStateOf(snapshot)
+      // Re-check the original strategy in the candidate list as well, so the UI
+      // never offers a Session that could not legally be bound either way.
+      if (record.strategy === 'new' && blankState !== 'blank') continue
+      if (record.strategy === 'fork' && blankState === 'blank') continue
       candidates.push({
         sessionId,
         createdAt: snapshot.header.createdAt,
-        blankState: await this.blankStateOf(snapshot),
+        blankState,
         title: this.liveTitle(sessionId),
+        manualBinding: true,
       })
     }
     candidates.sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
@@ -343,8 +482,17 @@ export class ExecutionService {
   /** Explicit user selection of a candidate for an unknown execution. */
   async bindCandidate(executionId: string, sessionId: string): Promise<ExecutionRecord> {
     const record = this.requireRecord(executionId)
-    if (record.status !== 'unknown' && record.status !== 'prepared') {
-      throw new ExecutionServiceError('invalid_transition', 'Only an unknown/prepared execution can be bound manually.')
+    if (record.status !== 'unknown') {
+      throw new ExecutionServiceError('invalid_transition', 'Only an unknown execution can be bound manually.')
+    }
+    if (record.strategy === 'reuse') {
+      throw new ExecutionServiceError(
+        'invalid_transition',
+        'Reuse executions must use their original source Session.',
+      )
+    }
+    if (record.sourceSessionId === sessionId) {
+      throw new ExecutionServiceError('candidate_not_found', 'A fork candidate cannot be the source Session.')
     }
     const persistence = this.options.sessionPersistence
     if (persistence === undefined) {
@@ -356,20 +504,39 @@ export class ExecutionService {
     if (snapshot.header.origin === 'subagent') {
       throw new ExecutionServiceError('candidate_not_found', 'Subagent Sessions cannot be selected.')
     }
-    if (typeof snapshot.header.createdAt === 'number' && snapshot.header.createdAt < record.createdAtMs) {
-      throw new ExecutionServiceError('candidate_not_found', 'This Session predates the execution intent.')
+    this.assertCreatedAfterIntent(record, snapshot, 'candidate_not_found')
+    const blankState = await this.blankStateOf(snapshot)
+    if (record.strategy === 'new' && blankState !== 'blank') {
+      throw new ExecutionServiceError('candidate_not_found', 'A new-session execution needs a blank candidate Session.')
     }
-    const bound = this.options.store
-      .read()
-      .some((entry) => entry.executionId !== record.executionId && entry.targetSessionId === sessionId)
-    if (bound) throw new ExecutionServiceError('target_session_already_bound', 'This Session is already bound to another execution.')
+    if (record.strategy === 'fork' && blankState === 'blank') {
+      throw new ExecutionServiceError('candidate_not_found', 'A fork child candidate cannot be blank.')
+    }
 
-    return this.updateRecord(executionId, (current) => ({
-      ...current,
-      targetSessionId: sessionId,
-      status: 'session_ready',
-      errorCode: undefined,
-    }))
+    return this.transition(executionId, (current, all) => {
+      if (current.status !== 'unknown') {
+        throw new ExecutionServiceError('invalid_transition', 'Only an unknown execution can be bound manually.')
+      }
+      if (current.targetSessionId !== undefined) {
+        throw new ExecutionServiceError(
+          'target_session_already_bound',
+          'This execution already has a different target Session.',
+        )
+      }
+      if (this.boundElsewhere(all, sessionId, executionId)) {
+        throw new ExecutionServiceError(
+          'target_session_already_bound',
+          'This Session is already bound to another execution.',
+        )
+      }
+      return {
+        ...current,
+        targetSessionId: sessionId,
+        status: 'session_ready',
+        bindingSource: 'manual',
+        errorCode: undefined,
+      }
+    })
   }
 
   // -------------------------------------------------------------------------
@@ -386,18 +553,58 @@ export class ExecutionService {
     return this.options.store.read().find((entry) => entry.clientRequestId === clientRequestId)
   }
 
-  private updateRecord(
+  /**
+   * Run a state decision inside the serialized store mutation. Every status
+   * check and write below must happen through this helper so concurrent
+   * callbacks cannot interleave between a check and its update.
+   */
+  private transition(
     executionId: string,
-    update: (current: ExecutionRecord) => ExecutionRecord,
+    decide: (current: ExecutionRecord, all: readonly ExecutionRecord[]) => ExecutionRecord,
   ): Promise<ExecutionRecord> {
     return this.durable(() => this.options.store.mutate((current) => {
       const index = current.findIndex((entry) => entry.executionId === executionId)
       if (index === -1) throw new ExecutionServiceError('execution_not_found', 'Execution was not found.')
-      const updated = { ...update(current[index]), updatedAt: this.options.clock.isoNow() }
+      const decided = decide(current[index], current)
+      const updated = { ...decided, updatedAt: this.options.clock.isoNow() }
       const next = current.slice()
       next[index] = updated
       return { next, result: updated }
     }))
+  }
+
+  private boundElsewhere(
+    records: readonly ExecutionRecord[],
+    sessionId: string,
+    executionId: string,
+  ): boolean {
+    return records.some(
+      (entry) =>
+        entry.executionId !== executionId &&
+        entry.targetSessionId === sessionId &&
+        entry.status !== 'failed',
+    )
+  }
+
+  private interruptGraceElapsed(record: ExecutionRecord): boolean {
+    const updatedAt = Date.parse(record.updatedAt)
+    if (!Number.isFinite(updatedAt)) return true
+    return this.options.clock.epochMs() - updatedAt >= DISPATCH_INTERRUPT_GRACE_MS
+  }
+
+  private assertCreatedAfterIntent(
+    record: ExecutionRecord,
+    snapshot: PersistedSessionLike,
+    code: 'target_session_before_intent' | 'candidate_not_found',
+  ): void {
+    if (typeof snapshot.header.createdAt !== 'number') return
+    if (snapshot.header.createdAt >= record.createdAtMs) return
+    throw new ExecutionServiceError(
+      code,
+      code === 'candidate_not_found'
+        ? 'This Session predates the execution intent.'
+        : 'The target Session predates the execution intent.',
+    )
   }
 
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceEntityLike> {

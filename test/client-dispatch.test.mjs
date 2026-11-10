@@ -56,6 +56,7 @@ class FakeHost {
     this.record = baseRecord(options.record)
     this.sessionReadyError = options.sessionReadyError
     this.verifiedStatus = options.verifiedStatus
+    this.resultFailures = options.resultFailures ?? 0
   }
 
   async intent(input) {
@@ -78,6 +79,10 @@ class FakeHost {
 
   async result(executionId, outcome, errorCode) {
     this.calls.push(['result', executionId, outcome, errorCode])
+    if (this.resultFailures > 0) {
+      this.resultFailures -= 1
+      throw new Error('host result request failed')
+    }
     const status =
       outcome === 'accepted'
         ? (this.verifiedStatus ?? 'accepted')
@@ -214,6 +219,36 @@ test('an ambiguous create failure is reported as unknown (never retried automati
   assert.equal(callNames(sessions).includes('prompt'), false)
 })
 
+test('a network error that happens to carry a code is still unknown', async () => {
+  const error = Object.assign(new Error('connection lost'), {
+    name: 'SessionCreateError',
+    code: 'connection/lost',
+  })
+  const host = new FakeHost()
+  const sessions = new FakeSessions({ createError: error })
+  const result = await hooks.runDispatchFlow({ host, sessions }, intentInput())
+
+  assert.equal(result.status, 'unknown')
+  assert.equal(host.calls.some((call) => call[0] === 'unknown'), true)
+  assert.equal(host.calls.some((call) => call[0] === 'failed'), false)
+  assert.equal(callNames(sessions).includes('prompt'), false)
+})
+
+test('an allowlisted Host rejection is a definite failure', async () => {
+  const error = Object.assign(new Error('session conflict'), {
+    name: 'SessionCreateError',
+    error: { code: 'session/conflict' },
+  })
+  const host = new FakeHost()
+  const sessions = new FakeSessions({ createError: error })
+  const result = await hooks.runDispatchFlow({ host, sessions }, intentInput())
+
+  assert.equal(result.status, 'failed')
+  assert.equal(host.calls.some((call) => call[0] === 'failed'), true)
+  assert.equal(host.calls.some((call) => call[0] === 'unknown'), false)
+  assert.equal(callNames(sessions).includes('prompt'), false)
+})
+
 test('created Session with unpersisted association is surfaced without prompting', async () => {
   const host = new FakeHost({ sessionReadyError: new Error('storage failed') })
   const sessions = new FakeSessions()
@@ -327,4 +362,61 @@ test('an already-dispatching duplicate intent does not create a Session again', 
 test('missing Session API disables dispatch without any Host side effects', async () => {
   const result = await hooks.runDispatchFlow({ host: new FakeHost() }, intentInput())
   assert.equal(result.status, 'unavailable')
+})
+
+test('Prompt accepted but Host result update failed stays pending with its ids', async () => {
+  const host = new FakeHost({ resultFailures: 1 })
+  const sessions = new FakeSessions()
+  const result = await hooks.runDispatchFlow({ host, sessions }, intentInput())
+
+  assert.equal(result.status, 'dispatching')
+  assert.equal(result.errorCode, 'host_result_unavailable')
+  assert.equal(result.execution.executionId, 'exec-1')
+  assert.equal(result.execution.requestId, 'req-1')
+  assert.equal(result.sessionId, 'session-created')
+  assert.equal(result.execution.targetSessionId, 'session-created')
+  assert.equal(callNames(sessions).filter((name) => name === 'create').length, 1)
+})
+
+test('after a page refresh, a pending execution can be resumed without a new Session', async () => {
+  const host = new FakeHost({ resultFailures: 1 })
+  const sessions = new FakeSessions()
+  const first = await hooks.runDispatchFlow({ host, sessions }, intentInput())
+  assert.equal(first.status, 'dispatching')
+
+  // Reload hands the persisted record (status dispatching, target Session)
+  // back to the orchestration; re-prompting uses the same requestId and does
+  // not create/fork another Session.
+  const resumed = await hooks.resumeDispatchFlow(
+    { host, sessions },
+    { ...first.execution, status: 'dispatching', targetSessionId: 'session-created' },
+  )
+  assert.equal(resumed.status, 'accepted')
+  const prompts = sessions.calls.filter((call) => call[0] === 'prompt')
+  assert.equal(prompts.length, 2)
+  assert.equal(prompts[0][5], 'req-1')
+  assert.equal(prompts[1][5], 'req-1')
+  assert.equal(callNames(sessions).filter((name) => name === 'create').length, 1)
+  assert.equal(host.calls.filter((call) => call[0] === 'intent').length, 1)
+})
+
+test('resumeDispatchFlow resumes a prepared execution without a new intent', async () => {
+  const host = new FakeHost()
+  const sessions = new FakeSessions()
+  const record = baseRecord({ status: 'prepared' })
+  const result = await hooks.resumeDispatchFlow({ host, sessions }, record)
+
+  assert.equal(result.status, 'accepted')
+  assert.equal(host.calls.filter((call) => call[0] === 'intent').length, 0)
+  assert.deepEqual(callNames(sessions), ['create', 'retain', 'prompt', 'release'])
+})
+
+test('resumeDispatchFlow never re-creates when the target is unknown', async () => {
+  const host = new FakeHost()
+  const sessions = new FakeSessions()
+  const record = baseRecord({ status: 'unknown', targetSessionId: undefined })
+  const result = await hooks.resumeDispatchFlow({ host, sessions }, record)
+
+  assert.equal(result.status, 'unknown')
+  assert.deepEqual(callNames(sessions), [])
 })

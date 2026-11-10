@@ -1,6 +1,15 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.0，等待用户验收）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1 记录最终实现与草案的差异。
+> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.1 完成第一轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1 记录最终实现与草案的差异。
+
+## 0.2 第一轮代码审查修复（0.4.1）
+
+- 同一 Todo 的未解决执行由 Host 串行化校验拒绝新 intent（`execution_unresolved`）；UI 在 unknown/dispatching 只提供检查/候选/恢复，主动新执行需先显式放弃（`execution-abandon`；在途 dispatching 禁止放弃，已创建 Session 保留）。
+- `isDefiniteSessionOperationError` 改为业务拒绝码白名单；网络超时/断连即使带 code 也按 unknown 处理。
+- Prompt 已接受但 Host result 更新失败时保持 `dispatching`（`host_result_unavailable`），保留 executionId/requestId/targetSessionId；后续以只读日志核验恢复，不重新创建。
+- 所有状态转换改为串行化临界区内的“检查+写入”；accepted 不被迟到 failed/unknown 覆盖；目标绑定不可被替换；unknown 可核验升 accepted；无目标 dispatching 仅在超过 120 秒宽限后转 `dispatch_interrupted`。
+- 目标绑定校验：new/fork 目标须晚于 intent；不得被其他执行占用；人工候选按原策略复核并标记 `bindingSource: manual`，UI 明确“Host 无法证明来源”。
+- 测试 129/129（并发 intent、accepted 保护、目标不可覆盖、宽限、网络错误码歧义、Host 回执失败与刷新恢复、放弃限制、人工绑定校验）。
 > 环境：DSH `0.2.2-rc.1`，profile `desktop`；证据来自 `cordis_inspect_query`、已安装包的 README / 构建产物（`app.asar` 内只读）。
 > 前置：Task 03A（执行前配置预览）已通过审查与核心 UI 验收，版本 0.3.1。
 

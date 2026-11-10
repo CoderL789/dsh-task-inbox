@@ -6,6 +6,7 @@
 
 - **完成（已通过验收）**：阶段目标已由用户验收；
 - **实现完成（待用户验收）**：实现与自动化/安装验证已完成，等待用户人工验收；
+- **审查修复完成（待复审）**：已按代码审查意见修复并回归，等待复审；
 - **待开始**：尚未开始。
 
 当前阶段总览：
@@ -15,7 +16,7 @@
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
 | Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | **实现完成（待用户验收）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **第一轮审查修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
 | Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
@@ -141,9 +142,18 @@
 
 ## Task 03B：执行派发
 
-**状态：实现完成（待用户验收；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+**状态：第一轮代码审查修复完成（版本 0.4.1，待复审；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
 
-**实现（2026-11-10，版本 0.4.0）**：
+**第一轮审查修复（2026-11-10）**：
+
+- **拒绝重复创建/Fork**：同一 Todo 存在 prepared/session_ready/dispatching/unknown 执行时，Host `execution-intent` 返回 `execution_unresolved`（并发 intent 也只成功一个）；Client 在 unknown/dispatching 下不再提供“重新派发”，只能检查状态/候选/恢复；发起全新执行必须先二次确认「放弃此执行」（`execution-abandon`，在途 dispatching 禁止放弃，已创建 Session 保留）。
+- **异常分类保守**：`isDefiniteSessionOperationError` 只把明确业务拒绝码（如 `session/conflict`、`session/agent-busy`、`remote-access/denied`）视为确定失败；网络超时/连接中断即使带 `code` 也按 unknown 处理。
+- **Prompt 已接受但 Host 回执失败**：保留 executionId/requestId/目标 Session，状态保持 `dispatching`（错误码 `host_result_unavailable`），UI 优先“检查状态”，后续通过只读日志核验；绝不因此重新创建 Session。
+- **状态机临界区**：所有状态检查/修改移入串行化 store mutation；accepted 不会被迟到 failed/unknown 覆盖；已绑定目标不能被其他 Session 替换；unknown 可通过日志核验恢复 accepted；无目标 dispatching 只有超过 120 秒宽限才转 `dispatch_interrupted`（避免其他窗口轮询误判）。
+- **目标绑定校验**：复用必须绑定原来源；新建/Fork 目标必须晚于执行意图创建、不能被其他执行占用；人工候选绑定按原策略复核（new 需空白、fork 不得为源/空白），并记录 `bindingSource: manual` + UI 提醒 Host 无法自动证明来源。
+- 测试增至 **129/129**，覆盖重复点击/并发请求/跨窗口等效并发 intent、网络错误码歧义、Host 回执失败与刷新恢复、accepted 并发保护、目标不可覆盖、宽限期、放弃与人工绑定校验。
+
+**实现（2026-11-10，版本 0.4.0；0.4.1 为第一轮审查修复）**：
 
 - 采用已确认的 Client 授权链路：`ctx.sessions.create/fork` + `ctx.sessions.retain` + `SessionFace.prompt(..., 'queue', ..., requestId)`；Host 不调用任何 Remote Session 方法；
 - 新建使用 `create()` 返回的实际 Session ID（不预生成 proposedSessionId）；Fork 默认 `allowMigration:false`；创建/Fork 成功后先经 `execution-session` 持久化目标 Session，再发送 Prompt；
@@ -152,7 +162,7 @@
 - Host 独立核验：只读扫描目标 Session 日志中 `user/message` 的 `source.rpcId === requestId`；Client 报告的 accepted 未通过核验时保持 `dispatching`，不直接标记 accepted；
 - Fork 未知结果：不自动重试；Host 列出 intent 之后、同 Workspace、未被绑定的候选会话，由用户手动绑定后继续；
 - UI：真实「确认并派发」、派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选核对/绑定、未命名会话短 ID/时间显示、中英文与明暗主题；
-- 测试：111/111（Host 意图/校验/状态机/日志核验/恢复 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失等路径）。
+- 测试：129/129（Host 意图/校验/状态机并发/日志核验/恢复/放弃 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失/刷新恢复等路径）。
 
 **已知限制**：archive/已完成轮次无法由 public Host API 预检（由 Remote prompt 最终裁决）；Fork 无幂等键；Client `sessions.create/list` 属随版本发布契约；真实 GUI 派发/刷新恢复尚未人工验收。
 
@@ -288,6 +298,7 @@
 | 2026-11-10 | Task 03B 架构验证：确认 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 走正常 Remote/Peer 授权链路；Host 不直调 @Remote；输出推荐调用链、协调协议与风险 | 已完成 |
 | 2026-11-10 | Task 03B 架构验证产物：`validateDispatchPreconditions` / `describeSessionChoice` 纯函数 + 测试；设计文档与 api-notes 更新；build/typecheck/check/test（83/83） | 已完成 |
 | 2026-11-10 | Task 03B 实现（0.4.0）：Client 授权链路 create/fork/retain/prompt + Host 执行意图/独立执行记录域/日志核验/候选绑定 + UI 接通；111/111 测试通过 | 已完成 |
+| 2026-11-10 | Task 03B 第一轮审查修复（0.4.1）：未解决执行防重/显式放弃、保守异常分类、Host 回执失败待核验、状态机临界区与 accepted 保护、中断宽限、目标绑定复核；129/129 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 
@@ -314,7 +325,8 @@
 | 17 | Client `sessions.create/list` 未出现在 inspect 方法目录 | 可能为未文档化 Client 契约，升级可能变化 | 依赖点集中在 Client 派发编排模块；升级 DSH 时回归；失败时降级“派发不可用” |
 | 18 | Fork 无幂等键 | 未知结果可能重复 child | 不自动重试；Host 只读列出候选，由用户手动绑定；记录 unknown |
 | 19 | ~~执行记录需要 domain v3 迁移~~ | — | **已改为**独立执行记录域 `task_inbox_executions`（v1），Todo 域 v2 不迁移；现有 Todo 数据零改动 |
-| 20 | 真实 GUI 派发与刷新/重启恢复未人工验收 | 首次真实派发风险与恢复流程 | 由用户明确确认后在 GUI 触发验收；开发 Agent 未对真实 Workspace/Session 执行测试 |
+| 20 | 真实 GUI 派发与刷新/重启恢复未人工验收 | 首次真实派发风险与恢复流程 | 第一轮审查问题已修复并回归；由用户明确确认后在 GUI 触发验收；开发 Agent 未对真实 Workspace/Session 执行测试 |
+| 22 | 未解决执行需要人工放弃才能开始新执行 | 用户可能觉得受阻塞 | 恢复优先（检查/候选/继续）；放弃需二次确认并保留已创建 Session；在途 dispatching 不允许放弃 |
 | 21 | Host 无法预检 archive 状态 / 已完成轮次 | 预览/意图校验可能过于乐观 | 由真实 Remote prompt 的 Host 规则最终裁决；失败错误码原样记录 |
 
 注：当前阶段未发布到 npm；安装均以本地插件包绝对路径为准。仓库地址：<https://github.com/CoderL789/dsh-task-inbox>。

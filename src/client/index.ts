@@ -27,6 +27,7 @@ interface DispatchCandidate {
   createdAt?: number
   blankState: 'blank' | 'non-blank' | 'unknown'
   title?: string
+  manualBinding?: boolean
 }
 
 interface ClientContext {
@@ -160,6 +161,7 @@ interface ClientExecutionRecord {
   workspacePath: string
   sourceSessionId?: string
   targetSessionId?: string
+  bindingSource?: 'client' | 'manual'
   status: DispatchStatus
   errorCode?: string
   createdAt: string
@@ -208,6 +210,7 @@ interface DispatchHostApi {
   ): Promise<ClientExecutionRecord>
   unknown(executionId: string, errorCode?: string): Promise<ClientExecutionRecord>
   failed(executionId: string, errorCode?: string): Promise<ClientExecutionRecord>
+  abandon(executionId: string): Promise<ClientExecutionRecord>
 }
 
 interface ExecutionIntentInput {
@@ -294,6 +297,23 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.dispatch.noCandidates':
       'No plausible candidate Sessions were found. Do not retry creating/forking automatically.',
     'execution.dispatch.retryNew': 'Start a new execution',
+    'execution.dispatch.resume': 'Resume existing execution',
+    'execution.dispatch.upgradeRecovery': 'Recovery first',
+    'execution.dispatch.resumeRequired':
+      'An unresolved execution exists for this Todo. Check status / candidates or resume it first; starting a new execution requires explicitly abandoning it.',
+    'execution.dispatch.abandon': 'Abandon this execution…',
+    'execution.dispatch.abandonConfirm': 'Confirm abandon (keeps any created Session)',
+    'execution.dispatch.abandonWarning':
+      'Abandoning only resolves this execution record. Any Session already created is kept; verify it manually. This cannot be undone.',
+    'execution.dispatch.abandoned': 'Execution abandoned. You may start a new execution explicitly.',
+    'execution.dispatch.manualBindingWarning':
+      'Manual binding: the Host cannot prove this Session was created by this execution. Verify it yourself before continuing.',
+    'execution.dispatch.resultPending':
+      'The Prompt was sent, but the Host has not confirmed the result. Check status later; do not re-create the Session.',
+    'error.execution_unresolved': 'This Todo already has an unresolved execution. Recover or abandon it first.',
+    'error.abandon_not_allowed': 'An accepted execution cannot be abandoned.',
+    'error.target_session_before_intent': 'The target Session predates this execution intent.',
+    'error.host_result_unavailable': 'The result could not be recorded yet; verify it with status/candidates.',
     'execution.dispatch.candidateHint':
       'Choose only if you can confirm this Session belongs to this task; binding is manual.',
     'execution.dispatch.latest': 'Existing execution for this task',
@@ -446,6 +466,23 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.dispatch.bind': '绑定该会话',
     'execution.dispatch.noCandidates': '没有找到可信的候选会话。请勿自动重试创建/Fork。',
     'execution.dispatch.retryNew': '开始新的执行',
+    'execution.dispatch.resume': '恢复已有执行',
+    'execution.dispatch.upgradeRecovery': '优先恢复',
+    'execution.dispatch.resumeRequired':
+      '该待办存在未解决的执行。请先检查状态/候选会话或恢复它；主动发起新执行需要先明确放弃旧执行。',
+    'execution.dispatch.abandon': '放弃此执行…',
+    'execution.dispatch.abandonConfirm': '确认放弃（保留已创建会话）',
+    'execution.dispatch.abandonWarning':
+      '放弃只会结束此执行记录。已创建的会话会被保留，请自行核查；该操作不可撤销。',
+    'execution.dispatch.abandoned': '执行已放弃；你可以明确发起新的执行。',
+    'execution.dispatch.manualBindingWarning':
+      '手动绑定：Host 无法证明该会话由本次执行创建，请自行确认后再继续。',
+    'execution.dispatch.resultPending':
+      'Prompt 已发送，但 Host 尚未确认结果。请稍后检查状态；不要重新创建会话。',
+    'error.execution_unresolved': '该待办已有未解决的执行，请先恢复或放弃。',
+    'error.abandon_not_allowed': '已接受的执行不能放弃。',
+    'error.target_session_before_intent': '目标会话早于本次执行意图。',
+    'error.host_result_unavailable': '结果暂时无法记录，请用“检查状态/候选会话”核实。',
     'execution.dispatch.candidateHint': '只有你确认该会话属于本任务时才绑定；绑定必须手动进行。',
     'execution.dispatch.latest': '该任务的已有执行',
     'execution.dispatch.resumeHint':
@@ -1018,15 +1055,40 @@ function dispatchErrorCode(error: unknown): string {
  * operation definitely failed. Other throws (network drop, page abort) leave
  * the outcome unknown and must never be retried automatically.
  */
+/**
+ * Only errors that prove the Host rejected the operation before a Session was
+ * created may be treated as definite failures. A network timeout, dropped
+ * connection or any transport-level code can happen after the Host committed
+ * the Session, so those stay unknown. Having a `code` field alone is not
+ * sufficient: connection errors also carry one.
+ */
+const DEFINITE_SESSION_ERROR_CODES = new Set([
+  'session/conflict',
+  'session/agent-busy',
+  'session/provider-models-unavailable',
+  'session/not-found',
+  'remote-access/denied',
+  'workspace/missing-dir',
+  'workspace/not-found',
+])
+
+function sessionErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const candidate = error as { code?: unknown; error?: unknown }
+  if (typeof candidate.error === 'object' && candidate.error !== null) {
+    const inner = candidate.error as { code?: unknown }
+    if (typeof inner.code === 'string') return inner.code
+  }
+  return typeof candidate.code === 'string' ? candidate.code : undefined
+}
+
 function isDefiniteSessionOperationError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false
-  const candidate = error as { name?: unknown; code?: unknown; error?: unknown }
-  if (candidate.name === 'SessionCreateError' || candidate.name === 'SessionForkError') return true
-  if (typeof candidate.code === 'string') return true
-  if (typeof candidate.error === 'object' && candidate.error !== null) {
-    return typeof (candidate.error as { code?: unknown }).code === 'string'
-  }
-  return false
+  const candidate = error as { name?: unknown }
+  const typed = candidate.name === 'SessionCreateError' || candidate.name === 'SessionForkError'
+  if (!typed) return false
+  const code = sessionErrorCode(error)
+  return code !== undefined && DEFINITE_SESSION_ERROR_CODES.has(code)
 }
 
 async function runPromptPhase(
@@ -1093,12 +1155,35 @@ async function runPromptPhase(
     }
 
     if (result.ok) {
-      const updated = await deps.host.result(dispatching.executionId, 'accepted')
-      return { status: updated.status, execution: updated, sessionId }
+      try {
+        const updated = await deps.host.result(dispatching.executionId, 'accepted')
+        return { status: updated.status, execution: updated, sessionId }
+      } catch (error) {
+        // The Prompt was accepted by DSH, but the Host could not persist the
+        // result. Keep the record as pending verification; never treat this as
+        // a normal failure that allows creating another Session.
+        return {
+          status: 'dispatching',
+          execution: dispatching,
+          sessionId,
+          errorCode: 'host_result_unavailable',
+        }
+      }
     }
     const code = result.error?.code ?? 'prompt/rejected'
-    const updated = await deps.host.result(dispatching.executionId, 'failed', code)
-    return { status: updated.status, execution: updated, sessionId, errorCode: code }
+    try {
+      const updated = await deps.host.result(dispatching.executionId, 'failed', code)
+      return { status: updated.status, execution: updated, sessionId, errorCode: code }
+    } catch {
+      // The Prompt was rejected but the Host could not record it. Keep it
+      // pending for a later status check instead of allowing a new Session.
+      return {
+        status: 'dispatching',
+        execution: dispatching,
+        sessionId,
+        errorCode: 'host_result_unavailable',
+      }
+    }
   } finally {
     try {
       reference.release()
@@ -1109,29 +1194,16 @@ async function runPromptPhase(
 }
 
 /**
- * Client-side dispatch orchestration:
- * Host intent (validated + persisted) → authorized Remote create/fork →
- * persist actual Session id → authorized Remote prompt (same requestId).
- *
- * A Session that was created but whose association could not be persisted is
- * returned with `status: 'error'` and its id, without sending a prompt.
+ * Perform the non-idempotent Session operation (create/reuse/fork) for an
+ * already persisted execution, then prompt. The execution must be prepared.
  */
-async function runDispatchFlow(
+async function runSessionOperation(
   deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
-  request: ExecutionIntentInput,
+  record: ClientExecutionRecord,
 ): Promise<DispatchRunResult> {
-  if (deps.sessions === undefined) {
-    return { status: 'unavailable', message: 'The Session API is unavailable in this client.' }
-  }
-
-  let record: ClientExecutionRecord
-  try {
-    record = await deps.host.intent(request)
-  } catch (error) {
-    return { status: 'error', errorCode: dispatchErrorCode(error) }
-  }
-  if (record.status !== 'prepared') {
-    return { status: record.status, execution: record, sessionId: record.targetSessionId }
+  const sessions = deps.sessions
+  if (sessions === undefined) {
+    return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
   }
 
   // Persist the "dispatching" transition before any non-idempotent create/fork.
@@ -1146,13 +1218,13 @@ async function runDispatchFlow(
   let sessionId: string | undefined
   try {
     if (record.strategy === 'new') {
-      sessionId = await deps.sessions.create({ workspaceId: record.workspaceId })
+      sessionId = await sessions.create({ workspaceId: record.workspaceId })
     } else if (record.strategy === 'reuse') {
       if (record.sourceSessionId === undefined) {
         return { status: 'failed', execution: record, errorCode: 'source_session_required' }
       }
       try {
-        await deps.sessions.refresh?.()
+        await sessions.refresh?.()
       } catch {
         // The retain below reports the actionable failure.
       }
@@ -1161,7 +1233,7 @@ async function runDispatchFlow(
       if (record.sourceSessionId === undefined) {
         return { status: 'failed', execution: record, errorCode: 'source_session_required' }
       }
-      sessionId = await deps.sessions.fork({ sessionId: record.sourceSessionId, allowMigration: false })
+      sessionId = await sessions.fork({ sessionId: record.sourceSessionId, allowMigration: false })
     }
   } catch (error) {
     const code = dispatchErrorCode(error)
@@ -1194,6 +1266,61 @@ async function runDispatchFlow(
   return runPromptPhase(deps, ready)
 }
 
+/**
+ * Client-side dispatch orchestration:
+ * Host intent (validated + persisted) → authorized Remote create/fork →
+ * persist actual Session id → authorized Remote prompt (same requestId).
+ *
+ * A Session that was created but whose association could not be persisted is
+ * returned with `status: 'error'` and its id, without sending a prompt.
+ */
+async function runDispatchFlow(
+  deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
+  request: ExecutionIntentInput,
+): Promise<DispatchRunResult> {
+  if (deps.sessions === undefined) {
+    return { status: 'unavailable', message: 'The Session API is unavailable in this client.' }
+  }
+
+  let record: ClientExecutionRecord
+  try {
+    record = await deps.host.intent(request)
+  } catch (error) {
+    return { status: 'error', errorCode: dispatchErrorCode(error) }
+  }
+  if (record.status !== 'prepared') {
+    return { status: record.status, execution: record, sessionId: record.targetSessionId }
+  }
+  return runSessionOperation(deps, record)
+}
+
+/**
+ * Resume an existing execution without creating a new intent:
+ * - prepared → the pending create/fork is resumed;
+ * - session_ready / dispatching / unknown with target → prompt retry/check;
+ * - unknown without target → recovery is required (candidates), never retry
+ *   the non-idempotent create/fork.
+ */
+async function resumeDispatchFlow(
+  deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
+  record: ClientExecutionRecord,
+): Promise<DispatchRunResult> {
+  if (deps.sessions === undefined) {
+    return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
+  }
+  if (record.status === 'prepared') return runSessionOperation(deps, record)
+  if (record.status === 'accepted') {
+    return { status: 'accepted', execution: record, sessionId: record.targetSessionId }
+  }
+  if (record.status === 'failed') {
+    return { status: 'failed', execution: record, sessionId: record.targetSessionId }
+  }
+  if (record.targetSessionId === undefined) {
+    return { status: record.status, execution: record }
+  }
+  return runPromptPhase(deps, record)
+}
+
 /** Retry only the Prompt phase of an already persisted target Session. */
 async function continueDispatch(
   deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
@@ -1204,11 +1331,13 @@ async function continueDispatch(
 
 interface TaskInboxTestHooks {
   runDispatchFlow: typeof runDispatchFlow
+  resumeDispatchFlow: typeof resumeDispatchFlow
   continueDispatch: typeof continueDispatch
 }
 
 ;(window as unknown as { __DSH_TASK_INBOX_TEST__?: TaskInboxTestHooks }).__DSH_TASK_INBOX_TEST__ = {
   runDispatchFlow,
+  resumeDispatchFlow,
   continueDispatch,
 }
 
@@ -1351,6 +1480,7 @@ window.__ModuleLoader__.load({
           const [dispatchError, setDispatchError] = React.useState<string | null>(null)
           const [dispatchCandidates, setDispatchCandidates] =
             React.useState<DispatchCandidate[] | null>(null)
+          const [abandonConfirm, setAbandonConfirm] = React.useState(false)
           const titleInputRef = React.useRef<{ focus(): void } | null>(null)
 
           React.useEffect(() => {
@@ -1524,6 +1654,7 @@ window.__ModuleLoader__.load({
             setDispatchMessage(null)
             setDispatchError(null)
             setDispatchCandidates(null)
+            setAbandonConfirm(false)
             void loadExecutionContext()
             void loadLatestExecution(todo.id)
           }
@@ -1597,6 +1728,13 @@ window.__ModuleLoader__.load({
                     op: 'execution-failed',
                     executionId,
                     ...(errorCode === undefined ? {} : { errorCode }),
+                  })
+                ).execution,
+              abandon: async (executionId) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-abandon',
+                    executionId,
                   })
                 ).execution,
             }
@@ -1679,7 +1817,14 @@ window.__ModuleLoader__.load({
                   setDispatchError(messageForCode(t, outcome.errorCode))
                 }
               } else if (outcome.status === 'dispatching') {
-                setDispatchMessage(t('execution.dispatch.dispatching'))
+                setDispatchMessage(
+                  outcome.errorCode === 'host_result_unavailable'
+                    ? t('execution.dispatch.resultPending')
+                    : t('execution.dispatch.dispatching'),
+                )
+                if (outcome.errorCode !== undefined && outcome.errorCode !== 'host_result_unavailable') {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                }
               } else if (outcome.status === 'failed') {
                 setDispatchMessage(t('execution.dispatch.failed'))
                 if (outcome.errorCode !== undefined) {
@@ -1702,8 +1847,26 @@ window.__ModuleLoader__.load({
                 }
               }
             } catch (error) {
+              const code = errorCode(error)
               setDispatchMessage(null)
-              setDispatchError(messageForCode(t, errorCode(error)))
+              setDispatchError(messageForCode(t, code))
+              if (code === 'execution_unresolved' && executionTarget !== null) {
+                // Surface the unresolved execution so the UI switches to
+                // recovery actions instead of leaving "confirm" enabled.
+                try {
+                  const data = await callApi<{ executions: ClientExecutionRecord[] }>({
+                    op: 'execution-status',
+                    todoId: executionTarget.id,
+                  })
+                  const latest = data.executions[0]
+                  if (latest !== undefined) {
+                    setDispatchResult(latest)
+                    setDispatchMessage(t('execution.dispatch.resumeRequired'))
+                  }
+                } catch {
+                  // The error message above already explains the block.
+                }
+              }
             } finally {
               setDispatchBusy(false)
             }
@@ -1717,7 +1880,7 @@ window.__ModuleLoader__.load({
             setDispatchError(null)
             setDispatchMessage(t('execution.dispatch.busy'))
             try {
-              const outcome = await continueDispatch(
+              const outcome = await resumeDispatchFlow(
                 { host: executionHostApi(), sessions },
                 record,
               )
@@ -1727,12 +1890,40 @@ window.__ModuleLoader__.load({
                 outcome.status === 'accepted'
                   ? t('execution.dispatch.accepted')
                   : outcome.status === 'dispatching'
-                    ? t('execution.dispatch.dispatching')
+                    ? outcome.errorCode === 'host_result_unavailable'
+                      ? t('execution.dispatch.resultPending')
+                      : t('execution.dispatch.dispatching')
                     : outcome.status === 'failed'
                       ? t('execution.dispatch.failed')
                       : t('execution.dispatch.unknown'),
               )
               if (outcome.errorCode !== undefined) setDispatchError(messageForCode(t, outcome.errorCode))
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function abandonDispatch(): Promise<void> {
+            const record = dispatchResult
+            if (record === null || dispatchBusy) return
+            if (!abandonConfirm) {
+              setAbandonConfirm(true)
+              setDispatchError(t('execution.dispatch.abandonWarning'))
+              return
+            }
+            setDispatchBusy(true)
+            setAbandonConfirm(false)
+            try {
+              const data = await callApi<{ execution: ClientExecutionRecord }>({
+                op: 'execution-abandon',
+                executionId: record.executionId,
+              })
+              setDispatchResult(data.execution)
+              setDispatchCandidates(null)
+              setDispatchMessage(t('execution.dispatch.abandoned'))
+              setDispatchError(null)
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))
             } finally {
@@ -1945,6 +2136,22 @@ window.__ModuleLoader__.load({
               if (record === null && dispatchError === null && dispatchMessage === null) return null
               const targetId = record?.targetSessionId ?? dispatchSessionId ?? undefined
               const buttons: unknown[] = []
+              const unresolved =
+                record !== null &&
+                (record.status === 'prepared' ||
+                  record.status === 'session_ready' ||
+                  record.status === 'dispatching' ||
+                  record.status === 'unknown')
+              const abandonable =
+                record !== null &&
+                (record.status === 'prepared' ||
+                  record.status === 'session_ready' ||
+                  record.status === 'unknown')
+              if (record?.status === 'prepared') {
+                buttons.push(
+                  actionButton(t('execution.dispatch.resume'), () => void resumeDispatch()),
+                )
+              }
               if (
                 targetId !== undefined &&
                 record !== null &&
@@ -1953,8 +2160,8 @@ window.__ModuleLoader__.load({
                   record.status === 'unknown')
               ) {
                 buttons.push(
-                  actionButton(t('execution.dispatch.continue'), () => void resumeDispatch()),
                   actionButton(t('execution.dispatch.check'), () => void checkDispatchStatus()),
+                  actionButton(t('execution.dispatch.continue'), () => void resumeDispatch()),
                 )
               }
               if (dispatchSessionId !== null && dispatchError !== null && record !== null) {
@@ -1969,12 +2176,19 @@ window.__ModuleLoader__.load({
                   actionButton(t('execution.dispatch.candidates'), () => void loadDispatchCandidates()),
                 )
               }
-              if (
-                record?.status === 'prepared' ||
-                record?.status === 'failed' ||
-                record?.status === 'unknown' ||
-                (record === null && dispatchError !== null)
-              ) {
+              if (unresolved) {
+                if (abandonable) {
+                  buttons.push(
+                    actionButton(
+                      abandonConfirm
+                        ? t('execution.dispatch.abandonConfirm')
+                        : t('execution.dispatch.abandon'),
+                      () => void abandonDispatch(),
+                    ),
+                  )
+                }
+              }
+              if (record?.status === 'failed' || (record === null && dispatchError !== null)) {
                 buttons.push(
                   actionButton(t('execution.dispatch.retryNew'), () => {
                     setDispatchResult(null)
@@ -1982,6 +2196,7 @@ window.__ModuleLoader__.load({
                     setDispatchMessage(null)
                     setDispatchError(null)
                     setDispatchCandidates(null)
+                    setAbandonConfirm(false)
                     setExecutionNotice(null)
                   }),
                 )
@@ -2008,6 +2223,12 @@ window.__ModuleLoader__.load({
                 targetId === undefined
                   ? null
                   : summaryRow(t('execution.summary.session'), targetId),
+                record?.bindingSource === 'manual'
+                  ? h('p', { style: STYLES.errorText }, t('execution.dispatch.manualBindingWarning'))
+                  : null,
+                unresolved
+                  ? h('p', { style: STYLES.hintText }, t('execution.dispatch.resumeRequired'))
+                  : null,
                 dispatchMessage === null
                   ? null
                   : h('p', { style: STYLES.hintText }, dispatchMessage),
@@ -2036,9 +2257,15 @@ window.__ModuleLoader__.load({
                           h(
                             'span',
                             { style: STYLES.summaryValue },
-                            candidate.createdAt === undefined
-                              ? candidate.sessionId
-                              : `${candidate.sessionId} · ${new Date(candidate.createdAt).toISOString()}`,
+                            [
+                              candidate.title,
+                              candidate.sessionId,
+                              candidate.createdAt === undefined
+                                ? null
+                                : new Date(candidate.createdAt).toISOString(),
+                            ]
+                              .filter((part) => part !== undefined && part !== null && part !== '')
+                              .join(' · '),
                           ),
                           h(
                             'button',

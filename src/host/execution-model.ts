@@ -41,6 +41,8 @@ export interface ExecutionRecord {
   workspacePath: string
   sourceSessionId?: string
   targetSessionId?: string
+  /** How the target Session was associated: Client-reported or manual candidate. */
+  bindingSource?: 'client' | 'manual'
   status: ExecutionStatus
   errorCode?: string
   createdAt: string
@@ -70,6 +72,7 @@ export const EXECUTION_RECORD_SCHEMA = z.object({
   workspacePath: z.string().min(1),
   sourceSessionId: z.string().min(1).max(128).optional(),
   targetSessionId: z.string().min(1).max(128).optional(),
+  bindingSource: z.enum(['client', 'manual']).optional(),
   status: z.enum(['prepared', 'session_ready', 'dispatching', 'accepted', 'failed', 'unknown']),
   errorCode: z.string().max(128).optional(),
   createdAt: z.string().min(1),

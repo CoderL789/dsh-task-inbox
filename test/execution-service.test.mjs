@@ -65,6 +65,7 @@ class FakeStore {
     this.records = records
     this.failWrites = false
     this.failReads = false
+    this.tail = Promise.resolve()
   }
 
   read() {
@@ -73,10 +74,18 @@ class FakeStore {
   }
 
   async mutate(recipe) {
-    if (this.failWrites) throw new Error('write failed')
-    const { next, result } = recipe(this.read())
-    this.records = next
-    return result
+    const run = async () => {
+      if (this.failWrites) throw new Error('write failed')
+      const { next, result } = recipe(this.read())
+      this.records = next
+      return result
+    }
+    const pending = this.tail.then(run, run)
+    this.tail = pending.then(
+      () => undefined,
+      () => undefined,
+    )
+    return pending
   }
 }
 
@@ -102,6 +111,8 @@ function makeHarness(options = {}) {
     })
   const store = new FakeStore(options.records ?? [])
   let counter = 0
+  let nowMs = options.nowMs ?? 1_700_000_050_000
+  let nowIso = new Date(nowMs).toISOString()
   const service = new ExecutionService({
     store,
     todoLookup: (id) => (options.todos ?? [todo()]).find((entry) => entry.id === id),
@@ -113,15 +124,19 @@ function makeHarness(options = {}) {
     sessions: { get: () => undefined },
     sessionTitle: { get: () => undefined },
     clock: {
-      isoNow: () => options.now ?? '2026-11-10T10:00:00.000Z',
-      epochMs: () => options.nowMs ?? 1_700_000_200_000,
+      isoNow: () => nowIso,
+      epochMs: () => nowMs,
     },
     ids: {
       executionId: () => `exec-${++counter}`,
       requestId: () => `req-${counter}`,
     },
   })
-  return { service, store, snapshots }
+  const advance = (ms) => {
+    nowMs += ms
+    nowIso = new Date(nowMs).toISOString()
+  }
+  return { service, store, snapshots, advance, nowMs: () => nowMs }
 }
 
 function newIntent(overrides = {}) {
@@ -224,6 +239,7 @@ test('reuse must target its source; fork must target a different child', async (
   )
   const ready = await service.markSessionReady(reuse.executionId, 'session-src')
   assert.equal(ready.status, 'session_ready')
+  await service.abandonExecution(reuse.executionId)
 
   const fork = await service.createIntent(newIntent({ clientRequestId: 'c-fork', strategy: 'fork', sourceSessionId: 'session-src' }))
   await assert.rejects(
@@ -256,9 +272,15 @@ test('dispatching can start before create/fork and is idempotent', async () => {
 })
 
 test('interrupted create/fork becomes unknown instead of being retried', async () => {
-  const { service, store } = makeHarness()
+  const { service, store, advance } = makeHarness()
   const record = await service.createIntent(newIntent())
   await service.beginDispatching(record.executionId)
+
+  // Another window polling immediately must not mark in-flight work unknown.
+  const immediate = await service.getStatus(record.executionId)
+  assert.equal(immediate.status, 'dispatching')
+
+  advance(121_000)
   const status = await service.getStatus(record.executionId)
   assert.equal(status.status, 'unknown')
   assert.equal(status.errorCode, 'dispatch_interrupted')
@@ -399,3 +421,227 @@ test('buildPromptSnapshot keeps an immutable title+description snapshot', () => 
   assert.equal(buildPromptSnapshot({ title: 'A', description: '' }), 'A')
   assert.equal(buildPromptSnapshot({ title: 'A', description: 'B' }), 'A\n\nB')
 })
+
+// ---------------------------------------------------------------------------
+// Concurrency, duplicate protection and recovery (Task 03B review round 1)
+// ---------------------------------------------------------------------------
+
+test('a Todo with an unresolved execution cannot start another one', async () => {
+  const { service, store } = makeHarness()
+  const first = await service.createIntent(newIntent())
+  await assert.rejects(
+    service.createIntent(newIntent({ clientRequestId: 'client-2' })),
+    (error) => error.code === 'execution_unresolved',
+  )
+  assert.equal(store.records.length, 1)
+
+  // Explicit abandon resolves the duplicate guard.
+  const abandoned = await service.abandonExecution(first.executionId)
+  assert.equal(abandoned.status, 'failed')
+  assert.equal(abandoned.errorCode, 'user_abandoned')
+  const second = await service.createIntent(newIntent({ clientRequestId: 'client-2' }))
+  assert.equal(second.status, 'prepared')
+  assert.equal(store.records.length, 2)
+})
+
+test('concurrent intents for the same Todo create exactly one execution', async () => {
+  const { service, store } = makeHarness()
+  const outcomes = await Promise.allSettled([
+    service.createIntent(newIntent({ clientRequestId: 'client-a' })),
+    service.createIntent(newIntent({ clientRequestId: 'client-b' })),
+  ])
+  const fulfilled = outcomes.filter((entry) => entry.status === 'fulfilled')
+  const rejected = outcomes.filter((entry) => entry.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  assert.equal(rejected[0].reason.code, 'execution_unresolved')
+  assert.equal(store.records.length, 1)
+})
+
+test('accepted cannot be overwritten by late failed/unknown callbacks', async () => {
+  const { service, store } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+    ],
+    eventsById: {
+      'session-src': [{ type: 'turn/start' }],
+      'session-new': [{ type: 'user/message', data: { source: { rpcId: 'req-1' } } }],
+    },
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.beginDispatching(record.executionId)
+
+  const accepted = await service.reportPromptResult(record.executionId, { outcome: 'accepted' })
+  assert.equal(accepted.status, 'accepted')
+  const lateFailed = await service.markFailed(record.executionId, 'late/failed')
+  assert.equal(lateFailed.status, 'accepted')
+  assert.equal(store.records[0].status, 'accepted')
+
+  const lateUnknown = await service.markUnknown(record.executionId, 'late/unknown')
+  assert.equal(lateUnknown.status, 'accepted')
+  await assert.rejects(
+    service.abandonExecution(record.executionId),
+    (error) => error.code === 'abandon_not_allowed',
+  )
+})
+
+test('a bound target Session cannot be replaced by another Session', async () => {
+  const { service } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+      persistedSession('session-new2', { eventCount: 0 }),
+    ],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+  })
+  const record = await service.createIntent(newIntent())
+  const ready = await service.markSessionReady(record.executionId, 'session-new')
+  assert.equal(ready.targetSessionId, 'session-new')
+  await assert.rejects(
+    service.markSessionReady(record.executionId, 'session-new2'),
+    (error) => error.code === 'target_session_already_bound',
+  )
+  const final = await service.getStatus(record.executionId)
+  assert.equal(final.targetSessionId, 'session-new')
+})
+
+test('a new execution cannot bind a Session owned by another execution', async () => {
+  const { service } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-shared', { eventCount: 0 }),
+    ],
+    eventsById: {
+      'session-src': [{ type: 'turn/start' }],
+      'session-shared': [{ type: 'user/message', data: { source: { rpcId: 'req-1' } } }],
+    },
+  })
+  const first = await service.createIntent(newIntent({ clientRequestId: 'c-1' }))
+  await service.markSessionReady(first.executionId, 'session-shared')
+  await service.beginDispatching(first.executionId)
+  const accepted = await service.reportPromptResult(first.executionId, { outcome: 'accepted' })
+  assert.equal(accepted.status, 'accepted')
+
+  const second = await service.createIntent(newIntent({ clientRequestId: 'c-2' }))
+  await assert.rejects(
+    service.markSessionReady(second.executionId, 'session-shared'),
+    (error) => error.code === 'target_session_already_bound',
+  )
+})
+
+test('new/fork targets must not predate the intent', async () => {
+  const { service } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-stale', {
+        header: { createdAt: 1_700_000_000_000 },
+        eventCount: 0,
+      }),
+    ],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+  })
+  const record = await service.createIntent(newIntent())
+  await assert.rejects(
+    service.markSessionReady(record.executionId, 'session-stale'),
+    (error) => error.code === 'target_session_before_intent',
+  )
+})
+
+test('manual candidate binding revalidates the original strategy', async () => {
+  const { service } = makeHarness()
+  const record = await service.createIntent(newIntent())
+  await service.markUnknown(record.executionId, 'create/ambiguous')
+
+  // A non-blank Session cannot satisfy the new-session strategy.
+  await assert.rejects(
+    service.bindCandidate(record.executionId, 'session-src'),
+    (error) => error.code === 'candidate_not_found',
+  )
+  const bound = await service.bindCandidate(record.executionId, 'session-blank')
+  assert.equal(bound.status, 'session_ready')
+  assert.equal(bound.bindingSource, 'manual')
+})
+
+test('getStatus can recover an unknown execution to accepted from the log', async () => {
+  const eventsById = {
+    'session-src': [{ type: 'turn/start' }],
+    'session-new': [],
+  }
+  const { service } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+    ],
+    eventsById,
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.markUnknown(record.executionId, 'prompt/timeout')
+
+  eventsById['session-new'].push({ type: 'user/message', data: { source: { rpcId: record.requestId } } })
+  const status = await service.getStatus(record.executionId)
+  assert.equal(status.status, 'accepted')
+})
+
+test('concurrent target bindings leave exactly one target and never overwrite', async () => {
+  const { service, store } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+      persistedSession('session-new2', { eventCount: 0 }),
+    ],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+  })
+  const record = await service.createIntent(newIntent())
+  const outcomes = await Promise.allSettled([
+    service.markSessionReady(record.executionId, 'session-new'),
+    service.markSessionReady(record.executionId, 'session-new2'),
+  ])
+  assert.equal(outcomes.filter((entry) => entry.status === 'fulfilled').length, 1)
+  assert.equal(outcomes.filter((entry) => entry.status === 'rejected').length, 1)
+  assert.equal(store.records[0].targetSessionId !== undefined, true)
+})
+
+test('accepted remains the final state under concurrent late callbacks', async () => {
+  const { service, store } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-new', { eventCount: 0 }),
+    ],
+    eventsById: {
+      'session-src': [{ type: 'turn/start' }],
+      'session-new': [{ type: 'user/message', data: { source: { rpcId: 'req-1' } } }],
+    },
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.beginDispatching(record.executionId)
+
+  await Promise.allSettled([
+    service.reportPromptResult(record.executionId, { outcome: 'accepted' }),
+    service.markFailed(record.executionId, 'late/failed'),
+  ])
+  assert.equal(store.records[0].status, 'accepted')
+})
+
+test('abandon is rejected while a dispatch is in flight', async () => {
+  const { service } = makeHarness()
+  const record = await service.createIntent(newIntent())
+  await service.beginDispatching(record.executionId)
+  await assert.rejects(
+    service.abandonExecution(record.executionId),
+    (error) => error.code === 'invalid_transition',
+  )
+})
+
+test('candidates are marked as manual bindings', async () => {
+  const { service } = makeHarness()
+  const record = await service.createIntent(newIntent())
+  await service.markUnknown(record.executionId, 'create/ambiguous')
+  const candidates = await service.candidates(record.executionId)
+  assert.equal(candidates.length > 0, true)
+  assert.equal(candidates[0].manualBinding, true)
+})
+

@@ -56,6 +56,7 @@ export type ApiOperation =
   | { op: 'execution-bind'; executionId: string; sessionId: string }
   | { op: 'execution-unknown'; executionId: string; errorCode?: string }
   | { op: 'execution-failed'; executionId: string; errorCode?: string }
+  | { op: 'execution-abandon'; executionId: string }
 
 export type ParseResult =
   | { ok: true; operation: ApiOperation }
@@ -187,10 +188,14 @@ export function parseApiPayload(payload: unknown): ParseResult {
       }
     }
     case 'execution-unknown':
-    case 'execution-failed': {
+    case 'execution-failed':
+    case 'execution-abandon': {
       const executionId = readStringField(payload, 'executionId')
       if (executionId === undefined) {
         return { ok: false, code: 'invalid_payload', message: 'executionId is required.' }
+      }
+      if (op === 'execution-abandon') {
+        return { ok: true, operation: { op, executionId } }
       }
       const errorCode = readOptionalStringField(payload, 'errorCode')
       return {
@@ -366,6 +371,17 @@ export async function handleOperation(
             operation.executionId,
             operation.errorCode,
           ),
+        })
+      }
+      case 'execution-abandon': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        if (typeof executionService.abandonExecution !== 'function') {
+          return failure('execution_unavailable', 'Execution abandonment is not available.')
+        }
+        return success({
+          execution: await executionService.abandonExecution(operation.executionId),
         })
       }
       case 'create': {
