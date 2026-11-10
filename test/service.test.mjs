@@ -2,20 +2,28 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { TodoService, TodoServiceError, REQUEST_DEDUPE_MS } from '../lib/host/service.js'
+import {
+  TodoStorageDefiniteError,
+  TodoStorageUncertainError,
+} from '../lib/host/store.js'
 
 /** Whole-list state repository fake: a write replaces the complete list. */
 class FakeStateRepository {
   constructor(initial = []) {
     this.todos = [...initial]
     this.failWrites = false
+    this.failure = 'none'
     this.writeCalls = 0
   }
 
   read() {
+    if (this.failure === 'uncertain') throw new TodoStorageUncertainError('unknown durable outcome')
     return [...this.todos]
   }
 
   async write(todos) {
+    if (this.failure === 'uncertain') throw new TodoStorageUncertainError('unknown durable outcome')
+    if (this.failure === 'definite') throw new TodoStorageDefiniteError('not saved')
     if (this.failWrites) throw new Error('medium write failed')
     this.writeCalls += 1
     this.todos = todos.map((todo) => ({ ...todo }))
@@ -145,6 +153,39 @@ test('create reports storage failure without changing state', async () => {
     return true
   })
   assert.equal(repository.todos.length, 0)
+})
+
+test('a definite storage failure still allows a later retry', async () => {
+  const { service, repository } = makeService()
+  repository.failure = 'definite'
+  await assert.rejects(service.create({ title: 'Retry me' }), (error) => {
+    assert.equal(error.code, 'storage_failed')
+    return true
+  })
+
+  repository.failure = 'none'
+  const created = await service.create({ title: 'Retry me' })
+  assert.equal(service.list().length, 1)
+  assert.equal(created.title, 'Retry me')
+})
+
+test('an uncertain storage outcome is reported as uncertain and blocks later operations', async () => {
+  const { service, repository } = makeService()
+  await service.create({ title: 'Before' })
+  const writesBefore = repository.writeCalls
+  repository.failure = 'uncertain'
+
+  await assert.rejects(service.create({ title: 'Maybe saved' }), (error) => {
+    assert.equal(error instanceof TodoServiceError, true)
+    assert.equal(error.code, 'storage_uncertain')
+    return true
+  })
+  // No later read or write may be served from the possibly stale memory.
+  await assert.rejects(async () => service.list(), (error) => error.code === 'storage_uncertain')
+  await assert.rejects(service.delete('anything'), (error) => error.code === 'storage_uncertain')
+  await assert.rejects(service.move('anything', 'up'), (error) => error.code === 'storage_uncertain')
+  await assert.rejects(service.create({ title: 'Again' }), (error) => error.code === 'storage_uncertain')
+  assert.equal(repository.writeCalls, writesBefore)
 })
 
 test('update edits title and description and keeps identity fields', async () => {

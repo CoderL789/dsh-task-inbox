@@ -24,6 +24,7 @@ import {
   type MoveDirection,
   type Todo,
 } from './model.js'
+import { TodoStorageDefiniteError, TodoStorageUncertainError } from './store.js'
 
 export interface Clock {
   isoNow(): string
@@ -51,6 +52,11 @@ export type TodoServiceErrorCode =
   | 'invalid_description'
   | 'not_found'
   | 'storage_failed'
+  | 'storage_uncertain'
+
+const STORAGE_FAILED_MESSAGE = 'The change was not saved to storage.'
+const STORAGE_UNCERTAIN_MESSAGE =
+  'The storage result is unknown. Reload or restart DSH to reload the durable data before trying again.'
 
 export class TodoServiceError extends Error {
   readonly code: TodoServiceErrorCode
@@ -90,7 +96,7 @@ export class TodoService {
   }
 
   list(): Todo[] {
-    return sortTodos(this.options.repository.read())
+    return this.readState()
   }
 
   create(input: CreateTodoInput): Promise<Todo> {
@@ -100,7 +106,7 @@ export class TodoService {
         throw new TodoServiceError(normalized.code, normalized.message)
       }
 
-      const current = sortTodos(this.options.repository.read())
+      const current = this.readState()
       const requestId = typeof input.requestId === 'string' ? input.requestId : ''
 
       if (requestId !== '') {
@@ -134,7 +140,7 @@ export class TodoService {
   update(input: UpdateTodoInput): Promise<Todo> {
     return this.exclusive(async () => {
       const id = typeof input.id === 'string' ? input.id : ''
-      const current = sortTodos(this.options.repository.read())
+      const current = this.readState()
       const index = current.findIndex((todo) => todo.id === id)
       if (index === -1) {
         throw new TodoServiceError('not_found', 'Task was not found.')
@@ -161,7 +167,7 @@ export class TodoService {
     return this.exclusive(async () => {
       const todoId = typeof id === 'string' ? id : ''
       if (todoId === '') return false
-      const current = sortTodos(this.options.repository.read())
+      const current = this.readState()
       const next = current.filter((todo) => todo.id !== todoId)
       if (next.length === current.length) return false
       await this.durable(() => this.options.repository.write(normalizeOrder(next)))
@@ -173,7 +179,7 @@ export class TodoService {
     return this.exclusive(async () => {
       const todoId = typeof id === 'string' ? id : ''
       const plan = planMove(
-        this.options.repository.read(),
+        this.readState(),
         todoId,
         direction,
         this.options.clock.isoNow(),
@@ -203,14 +209,37 @@ export class TodoService {
     return result
   }
 
+  /** Read and sort the durable list, translating repository failures. */
+  private readState(): Todo[] {
+    try {
+      return sortTodos(this.options.repository.read())
+    } catch (error) {
+      throw this.mapRepositoryError(error)
+    }
+  }
+
+  private mapRepositoryError(error: unknown): TodoServiceError {
+    if (error instanceof TodoStorageUncertainError) {
+      return new TodoServiceError('storage_uncertain', STORAGE_UNCERTAIN_MESSAGE)
+    }
+    const detail = error instanceof Error && error.message !== '' ? ` (${error.message})` : ''
+    return new TodoServiceError('storage_failed', `The task inbox storage could not be read.${detail}`)
+  }
+
   private async durable<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation()
     } catch (error) {
-      // The domain rejects a write before mutating its in-memory state, so a
-      // failed persist leaves reads consistent with the medium.
       if (error instanceof TodoServiceError) throw error
-      throw new TodoServiceError('storage_failed', 'The change could not be saved to storage.')
+      if (error instanceof TodoStorageUncertainError) {
+        throw new TodoServiceError('storage_uncertain', STORAGE_UNCERTAIN_MESSAGE)
+      }
+      // A definite failure is confirmed pre-commit, or confirmed against disk
+      // after a reopen by the repository; it is safe to say it was not saved.
+      if (error instanceof TodoStorageDefiniteError) {
+        throw new TodoServiceError('storage_failed', STORAGE_FAILED_MESSAGE)
+      }
+      throw new TodoServiceError('storage_failed', STORAGE_FAILED_MESSAGE)
     }
   }
 

@@ -183,8 +183,6 @@ export interface NodeRequestLike {
   url?: string
   headers: Record<string, string | string[] | undefined>
   on(event: string, listener: (...args: unknown[]) => void): void
-  /** Present on real `IncomingMessage`; used to stop reading an oversized body. */
-  destroy?(): void
 }
 
 export interface NodeResponseLike {
@@ -214,33 +212,31 @@ function chunkBytes(chunk: unknown): Uint8Array {
 /**
  * Read the request body as UTF-8 with an accurate BYTE limit.
  *
- * - The limit counts real bytes (`byteLength`), not JavaScript string length,
- *   so multi-byte content cannot bypass it.
- * - A streaming `TextDecoder` keeps code points intact when a request chunk
- *   splits a multi-byte UTF-8 sequence across `data` events.
- * - On overflow the request is destroyed (when the runtime supports it) so the
- *   remaining payload is not read into memory.
+ * HTTP safety (Task 02 review round 2): when the limit is exceeded we must NOT
+ * destroy the socket before the 413 response is flushed — a client still
+ * uploading would see ECONNRESET and could miss the response. Instead the
+ * reader keeps consuming (and discarding) the remaining request stream so the
+ * exchange stays well-formed, reports the overflow only on `end`, and the
+ * handler answers 413 with `Connection: close`. Buffered memory stays bounded
+ * at the limit; only the discarded bytes stream through.
+ *
+ * A streaming `TextDecoder` keeps code points intact when a request chunk
+ * splits a multi-byte UTF-8 sequence across `data` events.
  */
 function readBody(request: NodeRequestLike): Promise<string> {
   return new Promise((resolve, reject) => {
     const decoder = new TextDecoder('utf-8')
     const parts: string[] = []
     let bytes = 0
+    let tooLarge = false
     let settled = false
-
-    const fail = (error: unknown): void => {
-      if (settled) return
-      settled = true
-      reject(error)
-      request.destroy?.()
-    }
 
     request.on('data', (...args: unknown[]) => {
       if (settled) return
       const chunk = chunkBytes(args[0])
       bytes += chunk.byteLength
       if (bytes > MAX_BODY_BYTES) {
-        fail(new BodyTooLargeError('Request body is too large.'))
+        tooLarge = true
         return
       }
       parts.push(decoder.decode(chunk, { stream: true }))
@@ -248,18 +244,32 @@ function readBody(request: NodeRequestLike): Promise<string> {
     request.on('end', () => {
       if (settled) return
       settled = true
+      if (tooLarge) {
+        reject(new BodyTooLargeError('Request body is too large.'))
+        return
+      }
       parts.push(decoder.decode())
       resolve(parts.join(''))
     })
-    request.on('error', (error?: unknown) => fail(error))
+    request.on('error', (error?: unknown) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    })
   })
 }
 
-function sendJson(response: NodeResponseLike, status: number, body: ApiEnvelope): void {
+function sendJson(
+  response: NodeResponseLike,
+  status: number,
+  body: ApiEnvelope,
+  extraHeaders?: Record<string, string>,
+): void {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    ...extraHeaders,
   })
   response.end(JSON.stringify(body))
 }
@@ -321,10 +331,18 @@ export function createApiHandler(options: ApiHandlerOptions) {
       sendJson(response, result.status, result.body)
     } catch (error) {
       if (error instanceof BodyTooLargeError) {
-        sendJson(response, 413, {
-          ok: false,
-          error: { code: 'invalid_payload', message: error.message },
-        })
+        // The request body has been fully consumed (and discarded) here, so the
+        // response reaches the client reliably; close the connection so a
+        // large-exchange socket is not reused.
+        sendJson(
+          response,
+          413,
+          {
+            ok: false,
+            error: { code: 'invalid_payload', message: error.message },
+          },
+          { connection: 'close' },
+        )
         return
       }
       sendJson(response, 500, {

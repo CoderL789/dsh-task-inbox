@@ -71,8 +71,10 @@ export async function apply(ctx: PluginContext): Promise<void> {
     throw error
   }
 
+  const repository = new DomainTodoRepository(domain, () => ctx.storageDomain.open(TODO_DOMAIN_SPEC))
+
   ctx.effect(() => () => {
-    void domain.close()
+    void repository.close()
   })
 
   try {
@@ -87,7 +89,7 @@ export async function apply(ctx: PluginContext): Promise<void> {
   }
 
   const service = new TodoService({
-    repository: new DomainTodoRepository(domain),
+    repository,
     clock: {
       isoNow: () => new Date().toISOString(),
       epochMs: () => Date.now(),

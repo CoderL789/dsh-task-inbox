@@ -438,7 +438,7 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 ### 5. 验证状态
 
 - 已执行：`pnpm build` / `pnpm typecheck` / `pnpm check` / `pnpm test`（25/25）；官方 `install_bundle` 安装；未认证路由返回 401 JSON；Loader 行 `enabled: true`、`fiberPhase: active`；`sidebar.panellist` / `main` 注册存在。
-- 未执行：浏览器内的 CRUD 端到端、刷新与 DSH 重启后的数据保留、bundle 禁用/启用的重载测试（用户未批准该 Profile 操作，不绕过审批）。
+- 未执行：浏览器内的 CRUD 端到端、刷新与 DSH 重启后的数据保留、bundle 禁用/启用的重载测试（用户未批准该 Profile 操作，不绕过审批）。真实 v1 数据的在线迁移在后续轮次的插件热重载中自动发生，结果见「第二轮审查修复确认」第 3 节。
 
 ---
 
@@ -476,3 +476,38 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 
 - `pnpm build` / `typecheck` / `check` 通过；`pnpm test` **43/43** 通过。
 - 未执行：真实运行中的在线迁移、浏览器端到端、重启持久化、插件重载测试（未做任何 `plugin_manager` 变更操作）。
+
+---
+
+## 附：Task 02 第二轮审查修复确认（2026-11-10）
+
+本轮只修两个问题：HTTP 超限连接处理、Storage Domain 写入结果不确定时的恢复；其余架构不变。
+
+### 1. HTTP 超限：先读尽再响应，避免提前断连
+
+- 真实 Node 行为：在请求体尚未读完时 `request.destroy()` 会关闭 socket；仍在上传的客户端可能收到 `ECONNRESET`，从而丢失本应返回的 413。
+- 修复（`src/host/api.ts`）：超限后不再销毁请求，而是**继续读取并丢弃**剩余字节（内存只保留到上限），在 `end` 时拒绝为 `BodyTooLargeError`，由处理器返回 `413` 且附 `Connection: close`（该交换不再复用连接）。缓冲区保持有界，仅带宽被消耗。
+- 验证：新增 `test/http.integration.test.mjs`，使用**真实 `node:http` 服务器 + HTTP 客户端**（非 EventEmitter 模拟）覆盖：正常 create/list、带 `Content-Length` 的超限上传可靠收到 413、chunked 超限收到 413、跨网络 chunk 的 UTF-8、401。
+
+### 2. 写入结果不确定时的恢复
+
+依据（已安装版本源码）：
+- Domain 层对 `StorageError("unknown-state")` 会隔离：后续读写全部拒绝（`pkg:@deepseek-ai/dsh-storage-domain/lib/index.js:224-242`）。
+- 但 JSON `single` 布局的写入是“临时文件 → fsync → rename → 目录 fsync”；`setGlobal()` 只回滚内存，然后**原样抛出底层错误**（`pkg:@deepseek-ai/dsh-storage-json/lib/index.js:252-261,279-284`）。错误可能发生在 rename 之后，此时磁盘已更新而 API 报失败；Domain 不会把这类原始 I/O 错误标记为隔离。
+- storage-json README 明确：I/O 失败后“a rejected write does not prove that disk data or its stamp stayed unchanged”，应停止使用并关闭/重开以重新加载磁盘状态（`pkg:@deepseek-ai/dsh-storage-json/README.md:60,73-76`）。
+- 因此不能继续使用旧内存，也不能无条件告知用户“未修改”。
+
+修复（`src/host/store.ts` + `src/host/service.ts`）：
+- **分类**：`TypeError`（序列化前失败）、`DomainError`、`StorageError` 的 `closed/invalid-record/malformed-medium/version-mismatch/backend-not-found/facet-unsupported` 视为**确定未提交**；`StorageError("unknown-state")` 与其它原始 I/O/未知错误视为**结果不确定**。
+- **恢复**：不确定时立即 `domain.close()` 并重新 `ctx.storageDomain.open(spec)`（重新加载磁盘状态），把磁盘列表与“本次尝试写入的列表”“写入前列表”比较：
+  - 等于尝试值 → 实际已提交，按成功返回；
+  - 等于写入前值 → 确认未提交，返回确定失败（`storage_failed`）；
+  - 其它状态或重开失败 → **保护态**：memorize 一个 `storage_uncertain` 错误，后续 `read/write` 全部拒绝，不再触碰可能过期的内存，提示重启/重载 DSH。
+- **用户提示**：新增错误码 `storage_uncertain`（Client 中英文案），不再把不确定结果描述成“数据未被修改”；确定的 `storage_failed` 才提示修改未保存。
+- **测试**：`test/store.test.mjs` 新增分类、确定失败可重试、unknown-state 已提交确认、原始 I/O 未提交确认、重开失败保护态、第三态保护态等用例；`test/service.test.mjs` 新增不确定结果阻断后续操作、确定失败后重试用例。
+
+### 3. 本轮验证状态
+
+- `pnpm build` / `typecheck` / `check` 通过；`pnpm test` **56/56** 通过。
+- 未调用 `plugin_manager`、未提交/推送。
+- 真实存储文件说明：v1→v2 在线迁移已在**上一轮**（19:25 左右）由插件热重载自动执行，**不是本轮操作**；本轮多次 `pnpm build` 后文件 mtime 未变化。迁移后 2 条真实待办均在（id / 标题 / 描述 / createdAt / order 与迁移前一致）；两条记录的 `updatedAt` 变为迁移后某次排序操作的时间，迁移代码与测试本身不改 `updatedAt`。已额外复制一份只读备份 `$DSH_HOME/storages/task_inbox.v2.after-migration.backup.json`，未改动原文件。
