@@ -663,3 +663,41 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 
 - 仅只读 inspect、源码分析与纯函数测试；`pnpm build` / `typecheck` / `check` / `test` 通过，**83/83**。
 - 未创建 / Fork / 恢复真实 Session，未发送 Prompt，未调用 `plugin_manager`，未修改 Profile / Workspace / Session；未提交/推送；未开始 Task 03B 实现。
+
+---
+
+## 附：Task 03B 实现确认（2026-11-10，版本 0.4.0）
+
+### 1. 最终派发链路（Client 授权 Remote，Host 仅 public API）
+
+- **新建**：Client `ctx.sessions.create({ workspaceId })`（实际返回 id）→ Host `execution-session` 持久化目标 id → Client `ctx.sessions.retain(id,{source:'controllerOperation'})` → `await reference.ready` → `reference.binding.session.prompt([{type:'text',text}], 'queue', undefined, requestId)` → `reference.release()`。
+- **复用**：Host intent 重新校验非空白/归属 → Client `ctx.sessions.refresh()` → retain 源 Session → prompt（同上）。
+- **Fork**：Client `ctx.sessions.fork({ sessionId, allowMigration:false })` → Host 持久化 child id → retain child → prompt（同上）。
+- Host **不调用** `sessionController.create/fork/prompt` 或其它 `@Remote`；Client 插件通过 `ctx.get('sessions')` 访问 Session Controller Client 服务，`inject` 保持 `['slots','locale']`，缺少该服务时派发禁用而 Todo 功能不受影响。
+
+### 2. 执行记录持久化
+
+- 新增独立域 `task_inbox_executions`（version 1、`single`、global `{ executions }`）；Todo 域 `task_inbox` 保持 v2，**不迁移/不重写**，现有 Todo 数据零改动。
+- 文件：`$DSH_HOME/storages/task_inbox_executions.json`（首个 execution intent 写入时创建）。
+- 记录字段：`executionId`、`clientRequestId`、稳定的 `requestId`、`todoId`、`todoTitle`、不可变 `promptText`、strategy、`workspaceId/Path`、`sourceSessionId`、`targetSessionId`、status（prepared/session_ready/dispatching/accepted/failed/unknown）、errorCode、createdAt/updatedAt/createdAtMs。
+- 写入沿用 Task 02 的原子整表写与 durable-outcome 恢复（关闭重开 + 磁盘比对；不能确认时保护态）。
+
+### 3. 幂等与恢复
+
+- **intent 幂等**：Client 生成 `clientRequestId`；Host 对同一 id 返回原记录（参数不同则 `execution_conflict`）。
+- **防重复创建**：Client 在 create/fork 之前调用 Host `execution-dispatching` 把状态从 prepared 改为 dispatching；重试 intent 得到非 prepared 记录，不会再创建 Session。中断后在 `execution-status` 中把无目标的 dispatching 转为 `unknown`，不自动重发。
+- **Prompt 幂等**：同一 execution 的 `requestId` 固定；重试 Prompt 只对同一目标 Session 使用同一 requestId（DSH Remote 幂等）。
+- **接受核验**：Host 只读 `sessionPersistence.open(id,'read')` 扫描 `user/message` 的 `source.rpcId === requestId`；Client 报告的 accepted 不是唯一依据。
+- **Fork 未知**：不自动重试；`execution-candidates` 列出同 Workspace、intent 之后创建、未被绑定的会话（含 id/createdAt/blankState/标题），用户手动 `execution-bind` 后继续 Prompt。
+- **Todo 保护**：执行失败/未知均不删除/修改 Todo；执行记录只引用 `todoId` 并保存 Prompt 快照。
+
+### 4. HTTP 操作与 UI
+
+- `execution-context`（只读预览）、`execution-intent`、`execution-session`、`execution-dispatching`、`execution-result`、`execution-status`、`execution-candidates`、`execution-bind`、`execution-unknown`、`execution-failed`；沿用 Task 02 的浏览器 Cookie 认证和统一 `{ok,data}` / `{ok,error}` 信封。
+- Client UI：「确认并派发」、派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选会话人工核对/绑定、未命名会话短 ID/时间；中英文与主题 token。
+
+### 5. 测试与边界
+
+- `pnpm build` / `typecheck` / `check` / `test` 通过，**111/111**：含执行意图幂等/冲突、Todo/Workspace/Session 重新校验、状态机、日志 requestId 核验（Client 误报 accepted / 漏报 accepted）、Fork 候选绑定、存储失败、Client 编排 mock `ctx.sessions`（新建/复用/Fork、确定/不确定失败、关联持久化失败、retain ready 失败、Prompt 拒绝/抛错、继续派发、重复 intent）。
+- **未执行**：真实创建/Fork/恢复 Session、真实 Prompt、真实 GUI 验收、刷新/重启恢复；未调用 `plugin_manager`、未提交/推送。
+- **依赖风险**：Client `ctx.sessions.create/fork` 与 `SessionFace.prompt` 属随 `0.2.2-rc.1` 发布的 Client 契约（未出现在 Inspect 方法目录，但见 `ISessions` 类型与构建实现）；升级 DSH 需回归。Host 侧 public API 无法预检 archive/completed-turn，由真实 Remote prompt 最终裁决。

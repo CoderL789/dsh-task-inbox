@@ -14,6 +14,7 @@ import {
 } from './service.js'
 import type { Todo, MoveDirection } from './model.js'
 import type { ExecutionContextProvider, ExecutionContextSnapshot } from './execution-context.js'
+import { ExecutionServiceError, type ExecutionService } from './execution-service.js'
 
 export const API_PATH = '/plugins/dsh-task-inbox/api'
 export const MAX_BODY_BYTES = 256 * 1024
@@ -39,6 +40,22 @@ export type ApiOperation =
   | { op: 'delete'; id: string }
   | { op: 'move'; id: string; direction: MoveDirection }
   | { op: 'execution-context' }
+  | {
+      op: 'execution-intent'
+      clientRequestId: string
+      todoId: string
+      strategy: 'new' | 'reuse' | 'fork'
+      workspaceId: string
+      sourceSessionId?: string
+    }
+  | { op: 'execution-session'; executionId: string; sessionId: string }
+  | { op: 'execution-dispatching'; executionId: string }
+  | { op: 'execution-result'; executionId: string; outcome: 'accepted' | 'failed' | 'unknown'; errorCode?: string }
+  | { op: 'execution-status'; executionId?: string; todoId?: string }
+  | { op: 'execution-candidates'; executionId: string }
+  | { op: 'execution-bind'; executionId: string; sessionId: string }
+  | { op: 'execution-unknown'; executionId: string; errorCode?: string }
+  | { op: 'execution-failed'; executionId: string; errorCode?: string }
 
 export type ParseResult =
   | { ok: true; operation: ApiOperation }
@@ -63,6 +80,19 @@ function readId(record: Record<string, unknown>): string | undefined {
   return id
 }
 
+function readStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  if (typeof value !== 'string' || value.length === 0 || value.length > 128) return undefined
+  return value
+}
+
+function readOptionalStringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  return readStringField(record, key)
+}
+
 /** Validate the envelope envelope shape and operation fields. */
 export function parseApiPayload(payload: unknown): ParseResult {
   if (!isRecord(payload)) {
@@ -78,6 +108,96 @@ export function parseApiPayload(payload: unknown): ParseResult {
       return { ok: true, operation: { op } }
     case 'execution-context':
       return { ok: true, operation: { op } }
+    case 'execution-intent': {
+      const clientRequestId = readStringField(payload, 'clientRequestId')
+      const todoId = readStringField(payload, 'todoId')
+      const workspaceId = readStringField(payload, 'workspaceId')
+      const strategy = payload.strategy
+      if (
+        clientRequestId === undefined ||
+        todoId === undefined ||
+        workspaceId === undefined ||
+        (strategy !== 'new' && strategy !== 'reuse' && strategy !== 'fork')
+      ) {
+        return { ok: false, code: 'invalid_payload', message: 'Invalid execution intent.' }
+      }
+      const sourceSessionId = readOptionalStringField(payload, 'sourceSessionId')
+      return {
+        ok: true,
+        operation: {
+          op,
+          clientRequestId,
+          todoId,
+          strategy,
+          workspaceId,
+          ...(sourceSessionId === undefined ? {} : { sourceSessionId }),
+        },
+      }
+    }
+    case 'execution-session':
+    case 'execution-bind': {
+      const executionId = readStringField(payload, 'executionId')
+      const sessionId = readStringField(payload, 'sessionId')
+      if (executionId === undefined || sessionId === undefined) {
+        return { ok: false, code: 'invalid_payload', message: 'executionId and sessionId are required.' }
+      }
+      return { ok: true, operation: { op, executionId, sessionId } }
+    }
+    case 'execution-dispatching':
+    case 'execution-candidates': {
+      const executionId = readStringField(payload, 'executionId')
+      if (executionId === undefined) {
+        return { ok: false, code: 'invalid_payload', message: 'executionId is required.' }
+      }
+      return { ok: true, operation: { op, executionId } }
+    }
+    case 'execution-result': {
+      const executionId = readStringField(payload, 'executionId')
+      const outcome = payload.outcome
+      if (
+        executionId === undefined ||
+        (outcome !== 'accepted' && outcome !== 'failed' && outcome !== 'unknown')
+      ) {
+        return { ok: false, code: 'invalid_payload', message: 'Invalid execution result.' }
+      }
+      const errorCode = readOptionalStringField(payload, 'errorCode')
+      return {
+        ok: true,
+        operation: {
+          op,
+          executionId,
+          outcome,
+          ...(errorCode === undefined ? {} : { errorCode }),
+        },
+      }
+    }
+    case 'execution-status': {
+      const executionId = readOptionalStringField(payload, 'executionId')
+      const todoId = readOptionalStringField(payload, 'todoId')
+      if (executionId === undefined && todoId === undefined) {
+        return { ok: false, code: 'invalid_payload', message: 'executionId or todoId is required.' }
+      }
+      return {
+        ok: true,
+        operation: {
+          op,
+          ...(executionId === undefined ? {} : { executionId }),
+          ...(todoId === undefined ? {} : { todoId }),
+        },
+      }
+    }
+    case 'execution-unknown':
+    case 'execution-failed': {
+      const executionId = readStringField(payload, 'executionId')
+      if (executionId === undefined) {
+        return { ok: false, code: 'invalid_payload', message: 'executionId is required.' }
+      }
+      const errorCode = readOptionalStringField(payload, 'errorCode')
+      return {
+        ok: true,
+        operation: { op, executionId, ...(errorCode === undefined ? {} : { errorCode }) },
+      }
+    }
     case 'create':
       return {
         ok: true,
@@ -131,11 +251,12 @@ export function parseApiPayload(payload: unknown): ParseResult {
   }
 }
 
-/** Execute one validated operation against the CRUD service. */
+/** Execute one validated operation against the CRUD/execution services. */
 export async function handleOperation(
   service: TodoService,
   operation: ApiOperation,
   executionContext?: ExecutionContextProvider,
+  executionService?: ExecutionService,
 ): Promise<ApiResult> {
   try {
     switch (operation.op) {
@@ -159,6 +280,93 @@ export async function handleOperation(
           )
         }
         return success({ context })
+      }
+      case 'execution-intent': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        const execution = await executionService.createIntent({
+          clientRequestId: operation.clientRequestId,
+          todoId: operation.todoId,
+          strategy: operation.strategy,
+          workspaceId: operation.workspaceId,
+          ...(operation.sourceSessionId === undefined
+            ? {}
+            : { sourceSessionId: operation.sourceSessionId }),
+        })
+        return success({ execution })
+      }
+      case 'execution-session': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        const execution = await executionService.markSessionReady(
+          operation.executionId,
+          operation.sessionId,
+        )
+        return success({ execution })
+      }
+      case 'execution-dispatching': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        const execution = await executionService.beginDispatching(operation.executionId)
+        return success({ execution })
+      }
+      case 'execution-result': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        const execution = await executionService.reportPromptResult(operation.executionId, {
+          outcome: operation.outcome,
+          ...(operation.errorCode === undefined ? {} : { errorCode: operation.errorCode }),
+        })
+        return success({ execution })
+      }
+      case 'execution-status': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        if (operation.executionId !== undefined) {
+          return success({ execution: await executionService.getStatus(operation.executionId) })
+        }
+        return success({ executions: executionService.listForTodo(operation.todoId as string) })
+      }
+      case 'execution-candidates': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        return success({ candidates: await executionService.candidates(operation.executionId) })
+      }
+      case 'execution-bind': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        return success({
+          execution: await executionService.bindCandidate(operation.executionId, operation.sessionId),
+        })
+      }
+      case 'execution-unknown': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        return success({
+          execution: await executionService.markUnknown(
+            operation.executionId,
+            operation.errorCode,
+          ),
+        })
+      }
+      case 'execution-failed': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        return success({
+          execution: await executionService.markFailed(
+            operation.executionId,
+            operation.errorCode,
+          ),
+        })
       }
       case 'create': {
         const todo: Todo = await service.create({
@@ -187,6 +395,9 @@ export async function handleOperation(
       }
     }
   } catch (error) {
+    if (error instanceof ExecutionServiceError) {
+      return failure(error.code, error.message)
+    }
     if (error instanceof TodoServiceError) {
       return failure(error.code, error.message)
     }
@@ -218,6 +429,7 @@ export interface ApiHandlerOptions {
   service: TodoService
   authorize: AuthorizeHeaders
   executionContext?: ExecutionContextProvider
+  executionService?: ExecutionService
 }
 
 class BodyTooLargeError extends Error {}
@@ -352,7 +564,12 @@ export function createApiHandler(options: ApiHandlerOptions) {
         return
       }
 
-      const result = await handleOperation(options.service, parsed.operation, options.executionContext)
+      const result = await handleOperation(
+        options.service,
+        parsed.operation,
+        options.executionContext,
+        options.executionService,
+      )
       sendJson(response, result.status, result.body)
     } catch (error) {
       if (error instanceof BodyTooLargeError) {

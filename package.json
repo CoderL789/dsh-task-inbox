@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-inbox",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Session-decoupled task inbox for DeepSeek Harness: collect todos, then dispatch them to a workspace session for an Agent to execute.",
   "license": "MIT",
   "author": "DSH Task Inbox contributors",
@@ -43,7 +43,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "node --check lib/host/index.js && node --check lib/client/index.js",
-    "test": "node --test test/model.test.mjs test/service.test.mjs test/store.test.mjs test/api.test.mjs test/execution-context.test.mjs test/dispatch-plan.test.mjs test/http.integration.test.mjs",
+    "test": "node --test test/model.test.mjs test/service.test.mjs test/store.test.mjs test/api.test.mjs test/execution-context.test.mjs test/dispatch-plan.test.mjs test/execution-service.test.mjs test/client-dispatch.test.mjs test/http.integration.test.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

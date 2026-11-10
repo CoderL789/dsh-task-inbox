@@ -10,6 +10,7 @@ import {
   parseApiPayload,
 } from '../lib/host/api.js'
 import { TodoService } from '../lib/host/service.js'
+import { ExecutionServiceError } from '../lib/host/execution-service.js'
 
 function makeService() {
   const repository = {
@@ -121,6 +122,156 @@ test('handleOperation serves and fails execution-context safely', async () => {
   assert.equal(failing.body.ok, false)
   assert.equal(failing.body.error.code, 'execution_unavailable')
   assert.match(failing.body.error.message, /context unavailable/)
+})
+
+test('parseApiPayload validates execution operations', () => {
+  const intent = parseApiPayload({
+    op: 'execution-intent',
+    clientRequestId: 'c-1',
+    todoId: 'todo-1',
+    strategy: 'new',
+    workspaceId: 'ws-a',
+  })
+  assert.equal(intent.ok, true)
+  assert.equal(intent.operation.op, 'execution-intent')
+
+  for (const bad of [
+    { op: 'execution-intent', clientRequestId: 'c-1', todoId: 'todo-1', strategy: 'nope', workspaceId: 'ws-a' },
+    { op: 'execution-intent', todoId: 'todo-1', strategy: 'new', workspaceId: 'ws-a' },
+    { op: 'execution-session', executionId: 'exec-1' },
+    { op: 'execution-result', executionId: 'exec-1', outcome: 'maybe' },
+    { op: 'execution-status' },
+    { op: 'execution-bind', executionId: 'exec-1' },
+  ]) {
+    assert.equal(parseApiPayload(bad).ok, false)
+  }
+
+  assert.equal(parseApiPayload({ op: 'execution-dispatching', executionId: 'exec-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-candidates', executionId: 'exec-1' }).ok, true)
+  assert.equal(
+    parseApiPayload({ op: 'execution-result', executionId: 'exec-1', outcome: 'accepted' }).ok,
+    true,
+  )
+  assert.equal(parseApiPayload({ op: 'execution-status', todoId: 'todo-1' }).ok, true)
+})
+
+test('execution operations are unavailable without the execution service', async () => {
+  const { service } = makeService()
+  const response = await handleOperation(service, {
+    op: 'execution-intent',
+    clientRequestId: 'c-1',
+    todoId: 'todo-1',
+    strategy: 'new',
+    workspaceId: 'ws-a',
+  })
+  assert.equal(response.body.ok, false)
+  assert.equal(response.body.error.code, 'execution_unavailable')
+})
+
+test('execution operations map service results and service errors', async () => {
+  const { service } = makeService()
+  const calls = []
+  const executionService = {
+    async createIntent(input) {
+      calls.push(['createIntent', input])
+      return { executionId: 'exec-1', status: 'prepared', todoId: input.todoId }
+    },
+    async markSessionReady(id, sessionId) {
+      calls.push(['markSessionReady', id, sessionId])
+      return { executionId: id, status: 'session_ready', targetSessionId: sessionId }
+    },
+    async beginDispatching(id) {
+      calls.push(['beginDispatching', id])
+      return { executionId: id, status: 'dispatching' }
+    },
+    async reportPromptResult(id, report) {
+      calls.push(['reportPromptResult', id, report])
+      return { executionId: id, status: 'accepted' }
+    },
+    async getStatus(id) {
+      calls.push(['getStatus', id])
+      return { executionId: id, status: 'accepted' }
+    },
+    listForTodo(todoId) {
+      calls.push(['listForTodo', todoId])
+      return [{ executionId: 'exec-1', todoId }]
+    },
+    async candidates(id) {
+      calls.push(['candidates', id])
+      return [{ sessionId: 'session-candidate', blankState: 'non-blank' }]
+    },
+    async bindCandidate(id, sessionId) {
+      calls.push(['bindCandidate', id, sessionId])
+      return { executionId: id, status: 'session_ready', targetSessionId: sessionId }
+    },
+    async markUnknown(id, errorCode) {
+      calls.push(['markUnknown', id, errorCode])
+      return { executionId: id, status: 'unknown' }
+    },
+    async markFailed(id, errorCode) {
+      calls.push(['markFailed', id, errorCode])
+      return { executionId: id, status: 'failed' }
+    },
+  }
+
+  const intent = await handleOperation(
+    service,
+    {
+      op: 'execution-intent',
+      clientRequestId: 'c-1',
+      todoId: 'todo-1',
+      strategy: 'new',
+      workspaceId: 'ws-a',
+    },
+    undefined,
+    executionService,
+  )
+  assert.equal(intent.body.ok, true)
+  assert.deepEqual(intent.body.data.execution, { executionId: 'exec-1', status: 'prepared', todoId: 'todo-1' })
+
+  const ready = await handleOperation(
+    service,
+    { op: 'execution-session', executionId: 'exec-1', sessionId: 'session-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(ready.body.data.execution.status, 'session_ready')
+
+  const status = await handleOperation(
+    service,
+    { op: 'execution-status', todoId: 'todo-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(status.body.data.executions.length, 1)
+
+  const candidates = await handleOperation(
+    service,
+    { op: 'execution-candidates', executionId: 'exec-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(candidates.body.data.candidates[0].sessionId, 'session-candidate')
+
+  const failing = {
+    async createIntent() {
+      throw new ExecutionServiceError('workspace_unavailable', 'workspace gone')
+    },
+  }
+  const failure = await handleOperation(
+    service,
+    {
+      op: 'execution-intent',
+      clientRequestId: 'c-2',
+      todoId: 'todo-1',
+      strategy: 'new',
+      workspaceId: 'ws-a',
+    },
+    undefined,
+    failing,
+  )
+  assert.equal(failure.body.ok, false)
+  assert.equal(failure.body.error.code, 'workspace_unavailable')
 })
 
 test('handleOperation maps unexpected errors to HTTP 500', async () => {

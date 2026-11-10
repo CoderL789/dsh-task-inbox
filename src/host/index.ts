@@ -1,14 +1,12 @@
 /**
- * Host half of the DSH Task Inbox bundle (Task 02).
+ * Host half of the DSH Task Inbox bundle (Task 02/03B).
  *
  * Responsibilities:
- * - open the plugin-owned storage domain (`ctx.storageDomain`, JSON backend,
- *   single-file layout) and keep it for the plugin lifetime;
- * - expose the todo CRUD service through one same-origin HTTP route
- *   (`POST /plugins/dsh-task-inbox/api`);
- * - authenticate every request with `ctx.connection.requestRejection`.
- *
- * No Agent, workspace, or session APIs are used in this phase.
+ * - keep the Todo domain (`task_inbox`) untouched and add the separate
+ *   execution-record domain (`task_inbox_executions`);
+ * - serve Todo CRUD + execution coordination over one authenticated route;
+ * - re-validate dispatch intents and independently verify prompt acceptance;
+ * - never call a Remote Session method from the Host.
  */
 import { TODO_DOMAIN_SPEC } from './domain.js'
 import { DomainTodoRepository, migrateLegacyTodos, type TodoDomainLike } from './store.js'
@@ -27,6 +25,13 @@ import {
   type SessionTitleLike,
   type WorkspaceRegistryLike,
 } from './execution-context.js'
+import {
+  EXECUTION_DOMAIN_SPEC,
+  DomainExecutionRepository,
+  ExecutionStore,
+  type ExecutionDomainLike,
+} from './execution-store.js'
+import { ExecutionService } from './execution-service.js'
 
 export const inject = ['webServer', 'connection', 'storageDomain'] as const
 
@@ -53,6 +58,7 @@ interface PluginContext {
   }
   storageDomain: {
     open(spec: typeof TODO_DOMAIN_SPEC): Promise<TodoDomainLike>
+    open(spec: typeof EXECUTION_DOMAIN_SPEC): Promise<ExecutionDomainLike>
   }
   effect(effect: () => (() => void) | void): () => void
   /** Optional service lookup for services that may be absent in a profile. */
@@ -64,10 +70,14 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function createTodoId(): string {
+function createLocalId(prefix: string): string {
   const cryptoApi = globalThis.crypto
   if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
-  return `todo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function createTodoId(): string {
+  return createLocalId('todo')
 }
 
 export async function apply(ctx: PluginContext): Promise<void> {
@@ -120,9 +130,52 @@ export async function apply(ctx: PluginContext): Promise<void> {
       }),
   }
 
+  // Task 03B: execution records live in their own domain, so the existing
+  // Todo domain (and its data) is never migrated, rewritten or reset. A
+  // failure to open it only disables dispatch, not Task CRUD.
+  let executionService: ExecutionService | undefined
+  try {
+    const executionDomain = await ctx.storageDomain.open(EXECUTION_DOMAIN_SPEC)
+    const executionRepository = new DomainExecutionRepository(
+      executionDomain,
+      () => ctx.storageDomain.open(EXECUTION_DOMAIN_SPEC),
+    )
+    ctx.effect(() => () => {
+      void executionRepository.close()
+    })
+    const executionStore = new ExecutionStore(executionRepository)
+    executionService = new ExecutionService({
+      store: executionStore,
+      todoLookup: (id) => {
+        try {
+          return service.list().find((todo) => todo.id === id)
+        } catch {
+          return undefined
+        }
+      },
+      workspaceRegistry: ctx.get?.<WorkspaceRegistryLike>('workspaceRegistry'),
+      sessionPersistence: ctx.get?.<SessionPersistenceLike>('sessionPersistence'),
+      sessions: ctx.get?.<LiveSessionsLike>('sessions'),
+      sessionTitle: ctx.get?.<SessionTitleLike>('sessionTitle'),
+      clock: {
+        isoNow: () => new Date().toISOString(),
+        epochMs: () => Date.now(),
+      },
+      ids: {
+        executionId: () => createLocalId('exec'),
+        requestId: () => createLocalId('req'),
+      },
+    })
+  } catch (error) {
+    ctx.logger?.('dsh-task-inbox')?.warn?.(
+      `task-inbox execution storage is unavailable (dispatch disabled): ${describeError(error)}`,
+    )
+  }
+
   const handler = createApiHandler({
     service,
     executionContext,
+    ...(executionService === undefined ? {} : { executionService }),
     authorize: (headers) => ctx.connection.requestRejection({ headers }),
   })
 

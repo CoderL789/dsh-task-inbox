@@ -22,9 +22,18 @@ interface ClientPlugin {
   apply(ctx: ClientContext): void
 }
 
+interface DispatchCandidate {
+  sessionId: string
+  createdAt?: number
+  blankState: 'blank' | 'non-blank' | 'unknown'
+  title?: string
+}
+
 interface ClientContext {
   slots: SlotService
   locale: LocaleService
+  sessions?: ClientSessionsApi
+  get?<T>(name: string): T | undefined
   effect(effect: () => (() => void) | void): () => void
 }
 
@@ -131,6 +140,92 @@ interface ExecutionContextSnapshot {
   sessions: ExecutionSession[]
 }
 
+type DispatchStatus =
+  | 'prepared'
+  | 'session_ready'
+  | 'dispatching'
+  | 'accepted'
+  | 'failed'
+  | 'unknown'
+
+interface ClientExecutionRecord {
+  executionId: string
+  clientRequestId: string
+  requestId: string
+  todoId: string
+  todoTitle: string
+  promptText: string
+  strategy: ExecutionStrategy
+  workspaceId: string
+  workspacePath: string
+  sourceSessionId?: string
+  targetSessionId?: string
+  status: DispatchStatus
+  errorCode?: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface ClientPromptResult {
+  ok: boolean
+  error?: { code?: string; message?: string }
+}
+
+interface ClientSessionFace {
+  prompt(
+    content: { type: 'text'; text: string }[],
+    mode: 'queue' | 'steer',
+    signal: AbortSignal | undefined,
+    requestId: string,
+  ): Promise<ClientPromptResult>
+}
+
+interface ClientSessionReference {
+  readonly ready: Promise<void>
+  readonly binding: { readonly session: ClientSessionFace }
+  release(): void
+}
+
+interface ClientSessionsApi {
+  create(opts: { workspaceId: string }): Promise<string>
+  fork(opts: {
+    sessionId: string
+    allowMigration?: boolean
+    onCreated?: (childId: string) => void
+  }): Promise<string>
+  retain(id: string, opts: { source: string }): ClientSessionReference
+  refresh?(): Promise<void>
+}
+
+interface DispatchHostApi {
+  intent(input: ExecutionIntentInput): Promise<ClientExecutionRecord>
+  sessionReady(executionId: string, sessionId: string): Promise<ClientExecutionRecord>
+  dispatching(executionId: string): Promise<ClientExecutionRecord>
+  result(
+    executionId: string,
+    outcome: 'accepted' | 'failed' | 'unknown',
+    errorCode?: string,
+  ): Promise<ClientExecutionRecord>
+  unknown(executionId: string, errorCode?: string): Promise<ClientExecutionRecord>
+  failed(executionId: string, errorCode?: string): Promise<ClientExecutionRecord>
+}
+
+interface ExecutionIntentInput {
+  clientRequestId: string
+  todoId: string
+  strategy: ExecutionStrategy
+  workspaceId: string
+  sourceSessionId?: string
+}
+
+interface DispatchRunResult {
+  status: 'unavailable' | 'accepted' | 'failed' | 'unknown' | 'session_ready' | 'dispatching' | 'prepared' | 'error'
+  execution?: ClientExecutionRecord
+  sessionId?: string
+  errorCode?: string
+  message?: string
+}
+
 const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
   en: {
     'panel.label': 'Task Inbox',
@@ -174,6 +269,57 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       'Dispatch is not connected yet (Task 03B). This confirmation only validates the configuration; no session is created and no Agent receives the task.',
     'execution.preview.persistent':
       'Task 03A preview: choosing a workspace or session does not execute anything.',
+    'execution.dispatch.intro':
+      'Configuration alone does not create a Session. Only “Confirm and dispatch” starts the authorized operation.',
+    'execution.dispatch.badge': 'A Session will be created/reused and the task sent',
+    'execution.dispatch.previewOnly':
+      'Dispatch is not available in this client; this confirmation only validates the configuration.',
+    'execution.dispatch.noService': 'The Session API is unavailable; dispatch is disabled.',
+    'execution.dispatch.confirm': 'Confirm and dispatch',
+    'execution.dispatch.busy': 'Dispatching…',
+    'execution.dispatch.accepted': 'Task accepted by the Agent. It will run in the target Session.',
+    'execution.dispatch.sessionReady': 'Session saved. The task has not been accepted yet.',
+    'execution.dispatch.dispatching': 'Prompt sent; waiting for Host verification.',
+    'execution.dispatch.failed': 'Dispatch failed.',
+    'execution.dispatch.unknown':
+      'Dispatch result is unknown. Check the target Session or candidate Sessions before retrying; do not re-create or re-fork automatically.',
+    'execution.dispatch.persistFailed':
+      'The Session was created but its association could not be saved ({id}). Retry saving — do not create another Session.',
+    'execution.dispatch.error': 'Dispatch could not be started.',
+    'execution.dispatch.openSession': 'Open target Session',
+    'execution.dispatch.continue': 'Continue dispatch',
+    'execution.dispatch.check': 'Check status',
+    'execution.dispatch.candidates': 'Find candidate Sessions',
+    'execution.dispatch.bind': 'Bind this Session',
+    'execution.dispatch.noCandidates':
+      'No plausible candidate Sessions were found. Do not retry creating/forking automatically.',
+    'execution.dispatch.retryNew': 'Start a new execution',
+    'execution.dispatch.candidateHint':
+      'Choose only if you can confirm this Session belongs to this task; binding is manual.',
+    'execution.dispatch.latest': 'Existing execution for this task',
+    'execution.dispatch.resumeHint':
+      'An earlier attempt was not accepted. You can safely continue from the saved Session; no new Session will be created.',
+    'execution.dispatch.agentHint': 'Acceptance means DSH admitted the prompt; completion is tracked in Task 04.',
+    'execution.status.prepared': 'Prepared',
+    'execution.status.session_ready': 'Session saved',
+    'execution.status.dispatching': 'Waiting for acceptance',
+    'execution.status.accepted': 'Accepted',
+    'execution.status.failed': 'Failed',
+    'execution.status.unknown': 'Unknown',
+    'error.execution_conflict': 'This execution request conflicts with an existing one.',
+    'error.execution_not_found': 'The execution record was not found.',
+    'error.invalid_transition': 'This execution is not in a state that allows this action.',
+    'error.workspace_unavailable': 'The selected workspace is unavailable.',
+    'error.source_session_required': 'Select a source session.',
+    'error.source_session_not_found': 'The source session was not found.',
+    'error.source_session_wrong_workspace': 'The source session does not belong to this workspace.',
+    'error.source_session_blank': 'Blank sessions cannot be reused or forked.',
+    'error.source_session_state_unknown': 'The source session state could not be confirmed.',
+    'error.target_session_not_found': 'The target session was not found.',
+    'error.target_session_wrong_workspace': 'The target session does not belong to this workspace.',
+    'error.target_session_not_blank': 'The new session is no longer blank.',
+    'error.candidate_not_found': 'That session is not a valid candidate.',
+    'error.verification_unavailable': 'Acceptance could not be verified yet.',
     'execution.todo.label': 'Task',
     'execution.workspace.label': 'Workspace',
     'execution.workspace.placeholder': 'Select a workspace',
@@ -209,6 +355,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.summary.workspace': 'Workspace',
     'execution.summary.strategy': 'Strategy',
     'execution.summary.session': 'Source session',
+    'execution.summary.status': 'Status',
     'execution.summary.newSession': 'New session',
     'execution.summary.unset': 'Not selected',
     'execution.confirm': 'Confirm configuration (preview)',
@@ -276,6 +423,54 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.preview.notice':
       '派发尚未接通（Task 03B）。本次确认仅校验配置，不会创建会话，也不会向 Agent 发送任务。',
     'execution.preview.persistent': 'Task 03A 预览：选择工作区或会话不会执行任何操作。',
+    'execution.dispatch.intro':
+      '仅配置不会创建会话；只有点击“确认并派发”才会执行受权操作。',
+    'execution.dispatch.badge': '将创建/复用会话并发送任务',
+    'execution.dispatch.previewOnly': '当前客户端无法派发；本次确认仅校验配置。',
+    'execution.dispatch.noService': 'Session API 不可用，派发已禁用。',
+    'execution.dispatch.confirm': '确认并派发',
+    'execution.dispatch.busy': '派发中…',
+    'execution.dispatch.accepted': 'Agent 已接受任务，将在目标会话中执行。',
+    'execution.dispatch.sessionReady': '会话已保存，但任务尚未被接受。',
+    'execution.dispatch.dispatching': 'Prompt 已发送，等待 Host 验证。',
+    'execution.dispatch.failed': '派发失败。',
+    'execution.dispatch.unknown':
+      '派发结果不确定。请检查目标会话或候选会话后再决定；不要自动重新创建/Fork。',
+    'execution.dispatch.persistFailed':
+      '会话已创建，但关联保存失败（{id}）。请重试保存——不要再次创建会话。',
+    'execution.dispatch.error': '无法开始派发。',
+    'execution.dispatch.openSession': '打开目标会话',
+    'execution.dispatch.continue': '继续派发',
+    'execution.dispatch.check': '检查状态',
+    'execution.dispatch.candidates': '查找候选会话',
+    'execution.dispatch.bind': '绑定该会话',
+    'execution.dispatch.noCandidates': '没有找到可信的候选会话。请勿自动重试创建/Fork。',
+    'execution.dispatch.retryNew': '开始新的执行',
+    'execution.dispatch.candidateHint': '只有你确认该会话属于本任务时才绑定；绑定必须手动进行。',
+    'execution.dispatch.latest': '该任务的已有执行',
+    'execution.dispatch.resumeHint':
+      '之前的执行尚未被接受。你可以从已保存的会话安全继续；不会创建新会话。',
+    'execution.dispatch.agentHint': '接受仅表示 DSH 已接收 Prompt；执行完成状态在 Task 04 追踪。',
+    'execution.status.prepared': '已准备',
+    'execution.status.session_ready': '会话已保存',
+    'execution.status.dispatching': '等待接受',
+    'execution.status.accepted': '已接受',
+    'execution.status.failed': '失败',
+    'execution.status.unknown': '不确定',
+    'error.execution_conflict': '该执行请求与已有记录冲突。',
+    'error.execution_not_found': '未找到执行记录。',
+    'error.invalid_transition': '当前执行状态不允许该操作。',
+    'error.workspace_unavailable': '所选工作区不可用。',
+    'error.source_session_required': '请选择来源会话。',
+    'error.source_session_not_found': '未找到来源会话。',
+    'error.source_session_wrong_workspace': '来源会话不属于该工作区。',
+    'error.source_session_blank': '空白会话不能用于复用或 Fork。',
+    'error.source_session_state_unknown': '来源会话状态无法确认。',
+    'error.target_session_not_found': '未找到目标会话。',
+    'error.target_session_wrong_workspace': '目标会话不属于该工作区。',
+    'error.target_session_not_blank': '新会话已不再是空白会话。',
+    'error.candidate_not_found': '该会话不是有效候选。',
+    'error.verification_unavailable': '暂时无法验证是否已被接受。',
     'execution.todo.label': '待办',
     'execution.workspace.label': '工作区',
     'execution.workspace.placeholder': '选择工作区',
@@ -306,6 +501,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.summary.workspace': '工作区',
     'execution.summary.strategy': '策略',
     'execution.summary.session': '来源会话',
+    'execution.summary.status': '状态',
     'execution.summary.newSession': '新建会话',
     'execution.summary.unset': '未选择',
     'execution.confirm': '确认配置（仅预览）',
@@ -794,6 +990,228 @@ function sessionDisplayLabel(t: Translate, session: ExecutionSession): string {
   return flags.length === 0 ? title : `${title} (${flags.join(', ')})`
 }
 
+// ---------------------------------------------------------------------------
+// Dispatch orchestration (also exercised directly by Node tests through the
+// test hook below; it never touches React or the DOM).
+// ---------------------------------------------------------------------------
+
+function dispatchErrorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const candidate = error as {
+      code?: unknown
+      error?: unknown
+      message?: unknown
+    }
+    if (typeof candidate.error === 'object' && candidate.error !== null) {
+      const inner = candidate.error as { code?: unknown }
+      if (typeof inner.code === 'string') return inner.code
+    }
+    if (typeof candidate.code === 'string') return candidate.code
+    if (typeof candidate.message === 'string' && candidate.message !== '') return candidate.message
+  }
+  return 'client/transport'
+}
+
+/**
+ * A thrown Session Controller error (SessionCreateError/SessionForkError or an
+ * error carrying a Remote failure code) means the Host answered, so the
+ * operation definitely failed. Other throws (network drop, page abort) leave
+ * the outcome unknown and must never be retried automatically.
+ */
+function isDefiniteSessionOperationError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const candidate = error as { name?: unknown; code?: unknown; error?: unknown }
+  if (candidate.name === 'SessionCreateError' || candidate.name === 'SessionForkError') return true
+  if (typeof candidate.code === 'string') return true
+  if (typeof candidate.error === 'object' && candidate.error !== null) {
+    return typeof (candidate.error as { code?: unknown }).code === 'string'
+  }
+  return false
+}
+
+async function runPromptPhase(
+  deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
+  record: ClientExecutionRecord,
+): Promise<DispatchRunResult> {
+  const sessions = deps.sessions
+  if (sessions === undefined) {
+    return { status: 'unavailable', execution: record, message: 'Session API is unavailable.' }
+  }
+  const sessionId = record.targetSessionId
+  if (sessionId === undefined) {
+    return { status: 'prepared', execution: record, message: 'No target Session was persisted.' }
+  }
+
+  let dispatching: ClientExecutionRecord
+  try {
+    dispatching = await deps.host.dispatching(record.executionId)
+  } catch (error) {
+    return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+  }
+
+  let reference: ClientSessionReference
+  try {
+    reference = sessions.retain(sessionId, { source: 'controllerOperation' })
+  } catch (error) {
+    // Session exists; nothing was sent. Keep the execution resumable.
+    return {
+      status: 'session_ready',
+      execution: dispatching,
+      sessionId,
+      errorCode: dispatchErrorCode(error),
+    }
+  }
+
+  try {
+    try {
+      await reference.ready
+    } catch (error) {
+      return {
+        status: 'session_ready',
+        execution: dispatching,
+        sessionId,
+        errorCode: dispatchErrorCode(error),
+      }
+    }
+
+    let result: ClientPromptResult
+    try {
+      result = await reference.binding.session.prompt(
+        [{ type: 'text', text: dispatching.promptText }],
+        'queue',
+        undefined,
+        dispatching.requestId,
+      )
+    } catch (error) {
+      const code = dispatchErrorCode(error)
+      try {
+        const updated = await deps.host.result(dispatching.executionId, 'unknown', code)
+        return { status: updated.status, execution: updated, sessionId, errorCode: code }
+      } catch {
+        return { status: 'unknown', execution: dispatching, sessionId, errorCode: code }
+      }
+    }
+
+    if (result.ok) {
+      const updated = await deps.host.result(dispatching.executionId, 'accepted')
+      return { status: updated.status, execution: updated, sessionId }
+    }
+    const code = result.error?.code ?? 'prompt/rejected'
+    const updated = await deps.host.result(dispatching.executionId, 'failed', code)
+    return { status: updated.status, execution: updated, sessionId, errorCode: code }
+  } finally {
+    try {
+      reference.release()
+    } catch {
+      // Releasing an already-dropped reference is harmless.
+    }
+  }
+}
+
+/**
+ * Client-side dispatch orchestration:
+ * Host intent (validated + persisted) → authorized Remote create/fork →
+ * persist actual Session id → authorized Remote prompt (same requestId).
+ *
+ * A Session that was created but whose association could not be persisted is
+ * returned with `status: 'error'` and its id, without sending a prompt.
+ */
+async function runDispatchFlow(
+  deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
+  request: ExecutionIntentInput,
+): Promise<DispatchRunResult> {
+  if (deps.sessions === undefined) {
+    return { status: 'unavailable', message: 'The Session API is unavailable in this client.' }
+  }
+
+  let record: ClientExecutionRecord
+  try {
+    record = await deps.host.intent(request)
+  } catch (error) {
+    return { status: 'error', errorCode: dispatchErrorCode(error) }
+  }
+  if (record.status !== 'prepared') {
+    return { status: record.status, execution: record, sessionId: record.targetSessionId }
+  }
+
+  // Persist the "dispatching" transition before any non-idempotent create/fork.
+  // If the same execution is retried later, the Host returns a non-prepared
+  // record and no second Session can be created.
+  try {
+    record = await deps.host.dispatching(record.executionId)
+  } catch (error) {
+    return { status: 'error', execution: record, errorCode: dispatchErrorCode(error) }
+  }
+
+  let sessionId: string | undefined
+  try {
+    if (record.strategy === 'new') {
+      sessionId = await deps.sessions.create({ workspaceId: record.workspaceId })
+    } else if (record.strategy === 'reuse') {
+      if (record.sourceSessionId === undefined) {
+        return { status: 'failed', execution: record, errorCode: 'source_session_required' }
+      }
+      try {
+        await deps.sessions.refresh?.()
+      } catch {
+        // The retain below reports the actionable failure.
+      }
+      sessionId = record.sourceSessionId
+    } else {
+      if (record.sourceSessionId === undefined) {
+        return { status: 'failed', execution: record, errorCode: 'source_session_required' }
+      }
+      sessionId = await deps.sessions.fork({ sessionId: record.sourceSessionId, allowMigration: false })
+    }
+  } catch (error) {
+    const code = dispatchErrorCode(error)
+    const definite = isDefiniteSessionOperationError(error)
+    try {
+      const updated = definite
+        ? await deps.host.failed(record.executionId, code)
+        : await deps.host.unknown(record.executionId, code)
+      return { status: updated.status, execution: updated, errorCode: code }
+    } catch {
+      return { status: definite ? 'failed' : 'unknown', execution: record, errorCode: code }
+    }
+  }
+
+  if (sessionId === undefined || sessionId === '') {
+    return { status: 'failed', execution: record, errorCode: 'session_missing' }
+  }
+
+  let ready: ClientExecutionRecord
+  try {
+    ready = await deps.host.sessionReady(record.executionId, sessionId)
+  } catch (error) {
+    return {
+      status: 'error',
+      execution: record,
+      sessionId,
+      errorCode: dispatchErrorCode(error),
+    }
+  }
+  return runPromptPhase(deps, ready)
+}
+
+/** Retry only the Prompt phase of an already persisted target Session. */
+async function continueDispatch(
+  deps: { host: DispatchHostApi; sessions?: ClientSessionsApi },
+  execution: ClientExecutionRecord,
+): Promise<DispatchRunResult> {
+  return runPromptPhase(deps, execution)
+}
+
+interface TaskInboxTestHooks {
+  runDispatchFlow: typeof runDispatchFlow
+  continueDispatch: typeof continueDispatch
+}
+
+;(window as unknown as { __DSH_TASK_INBOX_TEST__?: TaskInboxTestHooks }).__DSH_TASK_INBOX_TEST__ = {
+  runDispatchFlow,
+  continueDispatch,
+}
+
 window.__ModuleLoader__.load({
   id: PACKAGE_ID,
   factory(require) {
@@ -926,6 +1344,13 @@ window.__ModuleLoader__.load({
             React.useState<ExecutionStrategy>('new')
           const [executionSessionId, setExecutionSessionId] = React.useState('')
           const [executionNotice, setExecutionNotice] = React.useState<string | null>(null)
+          const [dispatchBusy, setDispatchBusy] = React.useState(false)
+          const [dispatchResult, setDispatchResult] = React.useState<ClientExecutionRecord | null>(null)
+          const [dispatchSessionId, setDispatchSessionId] = React.useState<string | null>(null)
+          const [dispatchMessage, setDispatchMessage] = React.useState<string | null>(null)
+          const [dispatchError, setDispatchError] = React.useState<string | null>(null)
+          const [dispatchCandidates, setDispatchCandidates] =
+            React.useState<DispatchCandidate[] | null>(null)
           const titleInputRef = React.useRef<{ focus(): void } | null>(null)
 
           React.useEffect(() => {
@@ -1094,7 +1519,328 @@ window.__ModuleLoader__.load({
             setConfirmId(null)
             setEditorMode(null)
             setEditingId(null)
+            setDispatchResult(null)
+            setDispatchSessionId(null)
+            setDispatchMessage(null)
+            setDispatchError(null)
+            setDispatchCandidates(null)
             void loadExecutionContext()
+            void loadLatestExecution(todo.id)
+          }
+
+          async function loadLatestExecution(todoId: string): Promise<void> {
+            try {
+              const data = await callApi<{ executions: ClientExecutionRecord[] }>({
+                op: 'execution-status',
+                todoId,
+              })
+              const latest = data.executions[0]
+              if (latest !== undefined && latest.status !== 'accepted') {
+                setDispatchResult(latest)
+                setDispatchMessage(t('execution.dispatch.resumeHint'))
+              }
+            } catch {
+              // Execution history is optional; the preview can still run.
+            }
+          }
+
+          function executionHostApi(): DispatchHostApi {
+            return {
+              intent: async (input) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-intent',
+                    clientRequestId: input.clientRequestId,
+                    todoId: input.todoId,
+                    strategy: input.strategy,
+                    workspaceId: input.workspaceId,
+                    ...(input.sourceSessionId === undefined
+                      ? {}
+                      : { sourceSessionId: input.sourceSessionId }),
+                  })
+                ).execution,
+              sessionReady: async (executionId, sessionId) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-session',
+                    executionId,
+                    sessionId,
+                  })
+                ).execution,
+              dispatching: async (executionId) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-dispatching',
+                    executionId,
+                  })
+                ).execution,
+              result: async (executionId, outcome, errorCode) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-result',
+                    executionId,
+                    outcome,
+                    ...(errorCode === undefined ? {} : { errorCode }),
+                  })
+                ).execution,
+              unknown: async (executionId, errorCode) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-unknown',
+                    executionId,
+                    ...(errorCode === undefined ? {} : { errorCode }),
+                  })
+                ).execution,
+              failed: async (executionId, errorCode) =>
+                (
+                  await callApi<{ execution: ClientExecutionRecord }>({
+                    op: 'execution-failed',
+                    executionId,
+                    ...(errorCode === undefined ? {} : { errorCode }),
+                  })
+                ).execution,
+            }
+          }
+
+          function describeDispatchStatus(status: string): string {
+            const key = `execution.status.${status}`
+            const text = t(key)
+            return text === key ? status : text
+          }
+
+          async function startDispatch(): Promise<void> {
+            if (dispatchBusy || executionTarget === null) return
+            if (executionWorkspaceId === '') {
+              setDispatchError(t('execution.error.workspaceRequired'))
+              return
+            }
+            const workspace = executionContext?.workspaces.find(
+              (entry) => entry.id === executionWorkspaceId,
+            )
+            if (workspace === undefined) {
+              setDispatchError(t('execution.error.workspaceRequired'))
+              return
+            }
+            if (!workspace.available) {
+              setDispatchError(t('execution.error.workspaceUnavailable'))
+              return
+            }
+            if (executionStrategy !== 'new') {
+              if (executionSessionId === '') {
+                setDispatchError(t('execution.error.sessionRequired'))
+                return
+              }
+              const session = executionContext?.sessions.find(
+                (entry) => entry.sessionId === executionSessionId,
+              )
+              if (
+                session === undefined ||
+                !isSessionSuitableForStrategy(session, executionStrategy)
+              ) {
+                setDispatchError(t('execution.error.sessionUnsuitable'))
+                return
+              }
+            }
+            const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            if (sessions === undefined) {
+              setDispatchError(t('execution.dispatch.noService'))
+              return
+            }
+
+            setDispatchBusy(true)
+            setDispatchError(null)
+            setDispatchMessage(t('execution.dispatch.busy'))
+            setDispatchCandidates(null)
+            try {
+              const outcome = await runDispatchFlow(
+                { host: executionHostApi(), sessions },
+                {
+                  clientRequestId: newRequestId(),
+                  todoId: executionTarget.id,
+                  strategy: executionStrategy,
+                  workspaceId: executionWorkspaceId,
+                  ...(executionStrategy === 'new'
+                    ? {}
+                    : { sourceSessionId: executionSessionId }),
+                },
+              )
+              if (outcome.execution !== undefined) setDispatchResult(outcome.execution)
+              if (outcome.sessionId !== undefined) setDispatchSessionId(outcome.sessionId)
+              if (outcome.status === 'error' && outcome.sessionId !== undefined) {
+                setDispatchError(
+                  t('execution.dispatch.persistFailed').replace('{id}', outcome.sessionId),
+                )
+                setDispatchMessage(null)
+              } else if (outcome.status === 'accepted') {
+                setDispatchMessage(t('execution.dispatch.accepted'))
+              } else if (outcome.status === 'session_ready') {
+                setDispatchMessage(t('execution.dispatch.sessionReady'))
+                if (outcome.errorCode !== undefined) {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                }
+              } else if (outcome.status === 'dispatching') {
+                setDispatchMessage(t('execution.dispatch.dispatching'))
+              } else if (outcome.status === 'failed') {
+                setDispatchMessage(t('execution.dispatch.failed'))
+                if (outcome.errorCode !== undefined) {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                }
+              } else if (outcome.status === 'unknown') {
+                setDispatchMessage(t('execution.dispatch.unknown'))
+                if (outcome.errorCode !== undefined) {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                }
+              } else if (outcome.status === 'unavailable') {
+                setDispatchMessage(null)
+                setDispatchError(t('execution.dispatch.previewOnly'))
+              } else {
+                setDispatchMessage(null)
+                if (outcome.errorCode !== undefined) {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                } else {
+                  setDispatchError(t('execution.dispatch.error'))
+                }
+              }
+            } catch (error) {
+              setDispatchMessage(null)
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function resumeDispatch(): Promise<void> {
+            const record = dispatchResult
+            const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            if (dispatchBusy || record === null || sessions === undefined) return
+            setDispatchBusy(true)
+            setDispatchError(null)
+            setDispatchMessage(t('execution.dispatch.busy'))
+            try {
+              const outcome = await continueDispatch(
+                { host: executionHostApi(), sessions },
+                record,
+              )
+              if (outcome.execution !== undefined) setDispatchResult(outcome.execution)
+              if (outcome.sessionId !== undefined) setDispatchSessionId(outcome.sessionId)
+              setDispatchMessage(
+                outcome.status === 'accepted'
+                  ? t('execution.dispatch.accepted')
+                  : outcome.status === 'dispatching'
+                    ? t('execution.dispatch.dispatching')
+                    : outcome.status === 'failed'
+                      ? t('execution.dispatch.failed')
+                      : t('execution.dispatch.unknown'),
+              )
+              if (outcome.errorCode !== undefined) setDispatchError(messageForCode(t, outcome.errorCode))
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function checkDispatchStatus(): Promise<void> {
+            const record = dispatchResult
+            if (record === null || dispatchBusy) return
+            setDispatchBusy(true)
+            try {
+              const data = await callApi<{ execution: ClientExecutionRecord }>({
+                op: 'execution-status',
+                executionId: record.executionId,
+              })
+              setDispatchResult(data.execution)
+              setDispatchMessage(
+                data.execution.status === 'accepted'
+                  ? t('execution.dispatch.accepted')
+                  : data.execution.status === 'dispatching'
+                    ? t('execution.dispatch.dispatching')
+                    : t('execution.dispatch.unknown'),
+              )
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function loadDispatchCandidates(): Promise<void> {
+            const record = dispatchResult
+            if (record === null || dispatchBusy) return
+            setDispatchBusy(true)
+            try {
+              const data = await callApi<{ candidates: DispatchCandidate[] }>({
+                op: 'execution-candidates',
+                executionId: record.executionId,
+              })
+              setDispatchCandidates(data.candidates)
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function bindDispatchCandidate(sessionId: string): Promise<void> {
+            const record = dispatchResult
+            if (record === null || dispatchBusy) return
+            setDispatchBusy(true)
+            try {
+              const data = await callApi<{ execution: ClientExecutionRecord }>({
+                op: 'execution-bind',
+                executionId: record.executionId,
+                sessionId,
+              })
+              setDispatchResult(data.execution)
+              setDispatchCandidates(null)
+              setDispatchMessage(t('execution.dispatch.sessionReady'))
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          async function retryPersistSession(): Promise<void> {
+            const record = dispatchResult
+            const sessionId = dispatchSessionId
+            const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            if (record === null || sessionId === null || sessions === undefined || dispatchBusy) return
+            setDispatchBusy(true)
+            setDispatchError(null)
+            try {
+              const ready = await callApi<{ execution: ClientExecutionRecord }>({
+                op: 'execution-session',
+                executionId: record.executionId,
+                sessionId,
+              })
+              setDispatchResult(ready.execution)
+              const outcome = await continueDispatch(
+                { host: executionHostApi(), sessions },
+                ready.execution,
+              )
+              if (outcome.execution !== undefined) setDispatchResult(outcome.execution)
+              setDispatchMessage(
+                outcome.status === 'accepted'
+                  ? t('execution.dispatch.accepted')
+                  : t('execution.dispatch.sessionReady'),
+              )
+            } catch (error) {
+              setDispatchError(messageForCode(t, errorCode(error)))
+            } finally {
+              setDispatchBusy(false)
+            }
+          }
+
+          function openTargetSession(): void {
+            const sessionId = dispatchResult?.targetSessionId ?? dispatchSessionId
+            if (sessionId === null || sessionId === undefined) return
+            const uiWorkspace = ctx.get?.<{ openSession(id: string): void }>('uiWorkspace')
+            if (uiWorkspace === undefined) {
+              setDispatchError(t('execution.dispatch.openSession'))
+              return
+            }
+            uiWorkspace.openSession(sessionId)
           }
 
           function closeExecution(): void {
@@ -1170,6 +1916,7 @@ window.__ModuleLoader__.load({
             const unknownCount = sessionsInWorkspace.filter(
               (session) => session.blankState === 'unknown',
             ).length
+            const dispatchAvailable = ctx.get?.<ClientSessionsApi>('sessions') !== undefined
 
             function summaryRow(label: string, value: string): unknown {
               return h(
@@ -1180,30 +1927,133 @@ window.__ModuleLoader__.load({
               )
             }
 
-            function confirmExecution(): void {
-              if (executionWorkspaceId === '') {
-                setExecutionNotice(t('execution.error.workspaceRequired'))
-                return
+            function actionButton(label: string, handler: () => void): unknown {
+              return h(
+                'button',
+                {
+                  type: 'button',
+                  style: STYLES.secondaryButton,
+                  onClick: handler,
+                  disabled: dispatchBusy,
+                },
+                label,
+              )
+            }
+
+            function renderDispatchStatus(): unknown {
+              const record = dispatchResult
+              if (record === null && dispatchError === null && dispatchMessage === null) return null
+              const targetId = record?.targetSessionId ?? dispatchSessionId ?? undefined
+              const buttons: unknown[] = []
+              if (
+                targetId !== undefined &&
+                record !== null &&
+                (record.status === 'session_ready' ||
+                  record.status === 'dispatching' ||
+                  record.status === 'unknown')
+              ) {
+                buttons.push(
+                  actionButton(t('execution.dispatch.continue'), () => void resumeDispatch()),
+                  actionButton(t('execution.dispatch.check'), () => void checkDispatchStatus()),
+                )
               }
-              if (workspace !== undefined && !workspace.available) {
-                setExecutionNotice(t('execution.error.workspaceUnavailable'))
-                return
+              if (dispatchSessionId !== null && dispatchError !== null && record !== null) {
+                buttons.push(
+                  actionButton(t('execution.dispatch.persistFailed').replace('{id}', dispatchSessionId), () =>
+                    void retryPersistSession(),
+                  ),
+                )
               }
-              if (executionStrategy !== 'new') {
-                if (executionSessionId === '') {
-                  setExecutionNotice(t('execution.error.sessionRequired'))
-                  return
-                }
-                if (
-                  sourceSession === undefined ||
-                  !isSessionSuitableForStrategy(sourceSession, executionStrategy)
-                ) {
-                  setExecutionNotice(t('execution.error.sessionUnsuitable'))
-                  return
-                }
+              if (record?.status === 'unknown') {
+                buttons.push(
+                  actionButton(t('execution.dispatch.candidates'), () => void loadDispatchCandidates()),
+                )
               }
-              // Task 03A: configuration preview only — no dispatch.
-              setExecutionNotice(t('execution.preview.notice'))
+              if (
+                record?.status === 'prepared' ||
+                record?.status === 'failed' ||
+                record?.status === 'unknown' ||
+                (record === null && dispatchError !== null)
+              ) {
+                buttons.push(
+                  actionButton(t('execution.dispatch.retryNew'), () => {
+                    setDispatchResult(null)
+                    setDispatchSessionId(null)
+                    setDispatchMessage(null)
+                    setDispatchError(null)
+                    setDispatchCandidates(null)
+                    setExecutionNotice(null)
+                  }),
+                )
+              }
+              if (targetId !== undefined) {
+                buttons.push(
+                  actionButton(t('execution.dispatch.openSession'), openTargetSession),
+                )
+              }
+
+              return h(
+                'div',
+                { style: STYLES.summaryBox },
+                h('div', { style: { fontWeight: 600 } }, t('execution.dispatch.latest')),
+                record === null
+                  ? null
+                  : summaryRow(
+                      t('execution.summary.strategy'),
+                      strategyLabel(t, record.strategy),
+                    ),
+                record === null
+                  ? null
+                  : summaryRow(t('execution.summary.status'), describeDispatchStatus(record.status)),
+                targetId === undefined
+                  ? null
+                  : summaryRow(t('execution.summary.session'), targetId),
+                dispatchMessage === null
+                  ? null
+                  : h('p', { style: STYLES.hintText }, dispatchMessage),
+                record?.status === 'accepted'
+                  ? h('p', { style: STYLES.hintText }, t('execution.dispatch.agentHint'))
+                  : null,
+                dispatchError === null
+                  ? null
+                  : h('p', { role: 'alert', style: STYLES.errorText }, dispatchError),
+                buttons.length === 0
+                  ? null
+                  : h('div', { style: STYLES.formActions }, ...buttons),
+                dispatchCandidates === null
+                  ? null
+                  : h(
+                      'div',
+                      null,
+                      h('p', { style: STYLES.hintText }, t('execution.dispatch.candidateHint')),
+                      dispatchCandidates.length === 0
+                        ? h('p', { style: STYLES.hintText }, t('execution.dispatch.noCandidates'))
+                        : null,
+                      ...dispatchCandidates.map((candidate) =>
+                        h(
+                          'div',
+                          { key: candidate.sessionId, style: STYLES.summaryRow },
+                          h(
+                            'span',
+                            { style: STYLES.summaryValue },
+                            candidate.createdAt === undefined
+                              ? candidate.sessionId
+                              : `${candidate.sessionId} · ${new Date(candidate.createdAt).toISOString()}`,
+                          ),
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              style: STYLES.secondaryButton,
+                              onClick: () => void bindDispatchCandidate(candidate.sessionId),
+                              disabled: dispatchBusy,
+                            },
+                            t('execution.dispatch.bind'),
+                          ),
+                        ),
+                      ),
+                    ),
+              )
             }
 
             function renderBody(): unknown {
@@ -1391,6 +2241,10 @@ window.__ModuleLoader__.load({
                   ),
                 ),
 
+                renderDispatchStatus(),
+                dispatchAvailable
+                  ? null
+                  : h('p', { style: STYLES.errorText }, t('execution.dispatch.previewOnly')),
                 executionNotice === null
                   ? null
                   : h('div', { role: 'status', style: STYLES.previewNotice }, executionNotice),
@@ -1410,10 +2264,21 @@ window.__ModuleLoader__.load({
                     'button',
                     {
                       type: 'button',
-                      style: STYLES.primaryButton,
-                      onClick: confirmExecution,
+                      style: {
+                        ...STYLES.primaryButton,
+                        ...(dispatchBusy || !dispatchAvailable || dispatchResult !== null
+                          ? { opacity: 0.55, cursor: 'default' }
+                          : {}),
+                      },
+                      onClick: () => void startDispatch(),
+                      disabled: dispatchBusy || !dispatchAvailable || dispatchResult !== null,
+                      'aria-busy': dispatchBusy,
                     },
-                    t('execution.confirm'),
+                    dispatchBusy
+                      ? t('execution.dispatch.busy')
+                      : dispatchAvailable
+                        ? t('execution.dispatch.confirm')
+                        : t('execution.confirm'),
                   ),
                 ),
               )
@@ -1434,9 +2299,19 @@ window.__ModuleLoader__.load({
                   'div',
                   { style: { minWidth: 0 } },
                   h('h2', { style: STYLES.cardTitle }, t('execution.panel.title')),
-                  h('p', { style: STYLES.hintText }, t('execution.preview.persistent')),
+                  h(
+                    'p',
+                    { style: STYLES.hintText },
+                    dispatchAvailable
+                      ? t('execution.dispatch.intro')
+                      : t('execution.preview.persistent'),
+                  ),
                 ),
-                h('span', { style: STYLES.executionBadge }, t('execution.preview.badge')),
+                h(
+                  'span',
+                  { style: STYLES.executionBadge },
+                  dispatchAvailable ? t('execution.dispatch.badge') : t('execution.preview.badge'),
+                ),
               ),
               h(
                 'div',

@@ -1,6 +1,6 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成，等待确认；尚未实现真实派发**（不创建/Fork/恢复真实 Session，不发送 Prompt）。
+> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.0，等待用户验收）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1 记录最终实现与草案的差异。
 > 环境：DSH `0.2.2-rc.1`，profile `desktop`；证据来自 `cordis_inspect_query`、已安装包的 README / 构建产物（`app.asar` 内只读）。
 > 前置：Task 03A（执行前配置预览）已通过审查与核心 UI 验收，版本 0.3.1。
 
@@ -15,6 +15,20 @@
 - `SessionFace.prompt(content, mode, signal?, requestId?)` —— 通过 Client Remote 调 `session/prompt`，带幂等 `requestId`。
 
 因此推荐架构为 **“Client 走正常 Remote 授权链路做会话操作与 Prompt 派发；Host 只做 public API 的重新校验与执行记录持久化”**，Host 插件**不需要**调用 `@Remote` 方法，也不需要 `sessionController.*`。
+
+## 0.1 实现更新（2026-11-10，版本 0.4.0）
+
+本设计稿已按用户确认的架构实现，最终实现与早期草案的差异如下（以本节为准）：
+
+1. **新建不预分配 Session ID**：Client 调用 `ctx.sessions.create({ workspaceId })`，使用返回的**实际 Session ID**；不再生成 `proposedSessionId`。Host 只在返回后通过 `execution-session` 持久化该 id。
+2. **执行记录使用独立存储域**：新增 `task_inbox_executions`（version 1，JSON 单文件 `$DSH_HOME/storages/task_inbox_executions.json`），**没有升级/迁移 Todo 域 `task_inbox`（保持 v2）**，因此现有 Todo 数据零改动、不会被清空或重写。原因是 Task 03B 记录与 Todo 分属不同生命周期，独立域可避免升级既有 Todo 域带来的风险；Todo 域与执行记录域各自使用原子整表写与恢复逻辑。
+3. **创建/Fork 前先落 `dispatching`**：`execution-intent`（prepared）→ Host `execution-dispatching`（dispatching，无目标）→ Client create/fork → `execution-session`（session_ready）→ Prompt 阶段再确认 dispatching。这样同一 `clientRequestId`/execution 重试时 Host 返回非 prepared 记录，Client 不会再创建第二个 Session；若进程在 create/fork 中中断，`execution-status` 会把无目标的 dispatching 转为 `unknown`，只能通过候选会话人工核对。
+4. **Host 独立核验接受结果**：只读扫描目标 Session 日志中 `user/message` 的 `source.rpcId === requestId`。Client 报告 accepted 但未核验通过时保持 `dispatching`（不误报 accepted）；Client 报告 failed 但日志已含 requestId 时纠正为 `accepted`。
+5. **新增 HTTP 协调操作**：`execution-intent`、`execution-session`、`execution-dispatching`、`execution-result`、`execution-status`、`execution-candidates`、`execution-bind`、`execution-unknown`、`execution-failed`；全部走 Task 02 的同源浏览器认证。
+6. **Fork/复用约束**：Fork 默认 `allowMigration:false`；无幂等键，结果不确定时不自动重试，Host 只列出候选会话供用户手动绑定。复用使用 `queue` 模式，不默认打断运行中的 Agent。
+7. **未命名 Session 显示**：实现为 Client 侧 `title → 短ID · ISO 创建时间 → 短ID` 的降级显示（宿主同时返回 `createdAt`）；`docs/task-03b-design.md` 第 6 节与 `dispatch-plan.ts` 的纯函数测试保持一致。
+8. **UI**：Task 03A 的“确认配置（仅预览）”已替换为真实“确认并派发”，仅在 Client `sessions` 服务可用时启用；包含派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选会话人工绑定；打开页面/选择配置/刷新不会自动创建会话或发送 Prompt。
+9. **验证**：`pnpm build` / `typecheck` / `check` / `test` 通过，**111/111**（Host 执行服务 + Client mock 编排）；未对真实 Workspace/Session 发起测试执行，首次真实测试由用户在 GUI 明确确认触发。
 
 ## 1. 运行时证据
 

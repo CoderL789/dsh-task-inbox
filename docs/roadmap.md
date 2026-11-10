@@ -15,7 +15,7 @@
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
 | Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | **架构验证完成（待确认方案）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **实现完成（待用户验收）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
 | Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
@@ -141,7 +141,20 @@
 
 ## Task 03B：执行派发
 
-**状态：架构验证完成（等待确认实现方案；尚未实现真实派发）**
+**状态：实现完成（待用户验收；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+
+**实现（2026-11-10，版本 0.4.0）**：
+
+- 采用已确认的 Client 授权链路：`ctx.sessions.create/fork` + `ctx.sessions.retain` + `SessionFace.prompt(..., 'queue', ..., requestId)`；Host 不调用任何 Remote Session 方法；
+- 新建使用 `create()` 返回的实际 Session ID（不预生成 proposedSessionId）；Fork 默认 `allowMigration:false`；创建/Fork 成功后先经 `execution-session` 持久化目标 Session，再发送 Prompt；
+- Host 新增独立执行记录域 `task_inbox_executions`（v1；Todo 域保持 v2 不迁移），提供 `execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` / `execution-unknown` / `execution-failed`；
+- 执行状态：`prepared` → `dispatching`（创建/Fork 前落库，防止同一执行重复创建）→ `session_ready` → `dispatching`（Prompt 阶段）→ `accepted` / `failed` / `unknown`；
+- Host 独立核验：只读扫描目标 Session 日志中 `user/message` 的 `source.rpcId === requestId`；Client 报告的 accepted 未通过核验时保持 `dispatching`，不直接标记 accepted；
+- Fork 未知结果：不自动重试；Host 列出 intent 之后、同 Workspace、未被绑定的候选会话，由用户手动绑定后继续；
+- UI：真实「确认并派发」、派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选核对/绑定、未命名会话短 ID/时间显示、中英文与明暗主题；
+- 测试：111/111（Host 意图/校验/状态机/日志核验/恢复 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失等路径）。
+
+**已知限制**：archive/已完成轮次无法由 public Host API 预检（由 Remote prompt 最终裁决）；Fork 无幂等键；Client `sessions.create/list` 属随版本发布契约；真实 GUI 派发/刷新恢复尚未人工验收。
 
 **核心结论**：**可以**让 Client 通过 DSH 正常的授权 Remote 链路完成创建 / Fork / Prompt 派发，不需要第三方 Host 插件直接调用 `sessionController.*`（`@Remote`）。
 
@@ -150,19 +163,19 @@
 - Client `ctx.sessions.create()`、`ctx.sessions.fork()`、`SessionFace.prompt(content, mode, signal, requestId)` 由 Session Controller Client 端实现并经 Connection RPC → API Gateway → Peer 鉴权；浏览器页面为 owner Peer，owner 不被 policy 检查，非 owner 仍会被服务端拒绝（不绕过鉴权）。
 - 三条策略统一采用：Host 记录 intent + 重新校验 → Client 授权 Remote create/fork → retain → prompt(requestId) → Host 记录 result/复核；Host 不调用 @Remote。
 - Host 公开 `agents.get/resume + followup` 仅作为降级方案（无 Peer 授权链、无 requestId 幂等、writer lock 风险）；Host 直调 `@Remote` 在“不绕过 Peer 鉴权”约束下**不采用**。
-- 恢复：Host 持久化 `execution` 记录（v3 迁移保留 v2 数据）；重启后用只读 `sessionPersistence.open(id,'read')` 判断 requestId 是否已落成消息；Fork 无幂等键，未知结果不自动重试、交用户确认；Prompt 以 requestId 幂等兜底。
+- 恢复：Host 持久化执行记录（独立域 `task_inbox_executions` v1；Todo 域 v2 不迁移）；重启后用只读 `sessionPersistence.open(id,'read')` 判断 requestId 是否已落成消息；Fork 无幂等键，未知结果不自动重试、交用户确认；Prompt 以 requestId 幂等兜底。
 - 未命名 Session 显示：`title → 短ID · ISO 创建时间 → 短ID`（`describeSessionChoice`，含纯函数测试）。
 - 派发前 Host 重新校验 Todo / Workspace / Source/Target Session（`validateDispatchPreconditions`，含纯函数测试），不信任 Task 03A 预览快照；archive 状态与「已完成轮次」由真实 Remote prompt 最终裁决。
 
 **目标**：按用户选择的策略真正派发 Todo 给 Agent，并持久化 Todo ↔ Workspace / Session 的执行关联；完整状态机与历史在 Task 04。
 
-**交付物（待实现）**：
+**交付物（已实现）**：
 
 - Client 授权链路派发：`ctx.sessions.create/fork` + `retain` + `SessionFace.prompt`；
-- Host `execution-intent` / `execution-result` 重新校验与记录；domain v3 `executions` 表（保留 v2 数据）；
-- 幂等 requestId、接受确认、失败与重启恢复（Fork 未知结果人工确认）；
+- Host 执行意图/关联/状态持久化（独立域 `task_inbox_executions` v1；Todo 域 v2 不迁移）；
+- 幂等 requestId、接受确认（Host 日志核验）、失败与重启恢复（Fork 未知结果人工确认）；
 - 用户明确确认后才派发；Todo 原内容不因失败丢失；
-- UI 接通“确认执行”，区分预览与真实派发。
+- UI 接通“确认并派发”，区分预览与真实派发。
 
 **验收标准**：
 
@@ -179,7 +192,7 @@
 - `retain` 打开历史的成本与失败处理；页面刷新/关闭中断协调（靠 Host 记录恢复）；
 - Fork 无幂等键，未知结果需人工确认；create 命名复用可能返回不同 id（以实际返回为准）；
 - 公开 Host API 无法确认 archive/completed-turn，最终由 Remote prompt 裁决；
-- 执行关联记录需要 domain v3 迁移，必须保留 v2 待办数据；
+- 执行记录使用独立的 `task_inbox_executions` 域（v1），Todo 域保持 v2 不迁移；若未来合并域需另行设计并保留两侧数据；
 - 权限：非 owner Peer 会被拒绝，本插件面向 owner 页面，不绕过。
 
 ---
@@ -274,17 +287,19 @@
 | 2026-11-10 | Task 03A 浏览器交互与中英文 / 明暗主题人工验收 | 已完成（核心 UI 验收通过） |
 | 2026-11-10 | Task 03B 架构验证：确认 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 走正常 Remote/Peer 授权链路；Host 不直调 @Remote；输出推荐调用链、协调协议与风险 | 已完成 |
 | 2026-11-10 | Task 03B 架构验证产物：`validateDispatchPreconditions` / `describeSessionChoice` 纯函数 + 测试；设计文档与 api-notes 更新；build/typecheck/check/test（83/83） | 已完成 |
+| 2026-11-10 | Task 03B 实现（0.4.0）：Client 授权链路 create/fork/retain/prompt + Host 执行意图/独立执行记录域/日志核验/候选绑定 + UI 接通；111/111 测试通过 | 已完成 |
+| 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 
 ## 已知开放问题
 
 | # | 问题 | 影响 | 当前处理 |
 | --- | --- | --- | --- |
-| 1 | 会话新建 / 复用 / Fork 与派发 API 的形态与稳定性 | Task 03B 的派发层设计，可能需要随官方接口调整 | 已在 Task 03A 完成验证并记录于 [api-notes.md](api-notes.md) 与 [task-03b-design.md](task-03b-design.md)：主路径依赖 `@Remote`（⚠️ 非第三方稳定契约），Task 03B 前需评估 |
-| 2 | 待办持久化选型 | 数据位置、备份、升级迁移与卸载行为 | **已解决**：使用 `ctx.storageDomain` 域 `task_inbox`（JSON 单文件 `$DSH_HOME/storages/task_inbox.json`），卸载保留、手动删除可清理；见 README「数据、备份与卸载」 |
-| 3 | 缺少自动化视觉 / 交互验证（无截图回归、无浏览器控制） | Task 02/03A 的界面与端到端交互只能人工验收 | 以人工验收清单为准，Task 05 再评估自动化手段 |
+| 1 | 会话新建 / 复用 / Fork 与派发 API 的形态与稳定性 | Task 03B 的派发层设计，可能需要随官方接口调整 | **已定案并实现**：Client 正常 Remote 授权链路（`ctx.sessions.create/fork` + `SessionFace.prompt`），Host 不直调 @Remote；见 [api-notes.md](api-notes.md) 与 [task-03b-design.md](task-03b-design.md) |
+| 2 | 待办持久化选型 | 数据位置、备份、升级迁移与卸载行为 | **已解决**：Todo 使用 `task_inbox`（v2，不迁移）；执行记录使用独立 `task_inbox_executions`（v1）；卸载保留、手动删除可清理；见 README「数据、备份与卸载」 |
+| 3 | 缺少自动化视觉 / 交互验证（无截图回归、无浏览器控制） | Task 02/03A/03B 的界面与端到端交互只能人工验收 | 以人工验收清单为准，Task 05 再评估自动化手段 |
 | 4 | 包名、版本策略与发布渠道（npm / 本地 / 远程仓库）未定 | 安装文档与发布流程；当前阶段明确不发布 npm | Task 05 前决策；仓库地址已确定 <https://github.com/CoderL789/dsh-task-inbox> |
-| 5 | 自动化测试策略：无 UI 测试；Host 单测为主 | 回归保障与发布信心 | Task 02 已补 56 个测试；Task 03A 增至 67 个（含执行上下文筛选 / 策略校验）；UI 测试 Task 05 评估 |
+| 5 | 自动化测试策略：无 UI 测试；Host/Client 编排单测为主 | 回归保障与发布信心 | Task 03B 已增至 111 个测试（Host + Client mock 编排）；UI 测试 Task 05 评估 |
 | 6 | 完整国际化覆盖范围与 `locale/*.json` 的用途未定（`locale/*.json` 目前仅含插件元信息，界面文案由 Client 半区内联字典提供） | Task 05 的 i18n 工作量与文案维护方式 | Task 05 前确认，可考虑把字典抽到共享资源 |
 | 7 | Client locale 字典 disposer 生命周期 | 插件重载时重复注册风险 | **已修复**：字典注册包在 `ctx.effect` 中，返回 disposer；重载时先释放旧字典 |
 | 8 | 排序原子性 / 部分提交风险 | 数据一致性与用户信任 | **已解决**：v2 将整份有序列表存为单个 global 状态，每次变更一次原子写；失败保持原状态，有并发 / 失败测试覆盖 |
@@ -292,12 +307,14 @@
 | 10 | 本阶段不做「标记完成」 | 待办状态固定 `todo` | 有意为之，Task 04 随执行状态机一起设计 |
 | 11 | v1 旧数据在线迁移 | 用户下次重载插件时才会发生 | **已完成**：插件热重载自动迁移；2 条真实待办数据核对保留，并另存只读备份 |
 | 12 | 整表重写带来的写放大与多进程写同一存储域不受支持 | 列表极大或双进程场景下性能 / 一致性 | 个人待办量级可接受；多进程场景不支持，文档已注明 |
-| 13 | 存储写入结果不确定（可能在 rename 之后失败） | 可能误报失败/成功或基于过期内存继续写 | **已修复**：区分确定/不确定，关闭重开存储域后按磁盘状态判定；无法恢复时进入保护态要求重启；有恢复与保护态测试 |
-| 14 | Task 03B 派发主路径依赖 `@Remote`（sessionController.create/fork/prompt） | 非第三方稳定契约；Host 内调用会绕过 Peer 访问策略 | Task 03B 前评估是否接受风险或改用/申请受支持 Host API；见 task-03b-design.md |
-| 15 | Task 03A 预览的信息限制 | 冷会话无标题；归档状态与「已完成轮次」无法在预览阶段确认 | UI 以 warning 明确提示，最终由派发时 Host 校验；会话空白状态已改为三态并通过只读日志确认 |
-| 16 | Task 03B 方案等待确认 | 是否接受 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 的“随版本发布的 Client 契约” | 架构验证完成并文档化；见 task-03b-design.md「待确认问题」 |
-| 17 | Client `sessions.create/list` 未出现在 inspect 方法目录 | 可能为未文档化 Client 契约，升级可能变化 | 依赖点集中封装；Task 03B 前做版本回归；失败时降级“派发不可用” |
-| 18 | Fork 无幂等键 | 未知结果可能重复 child | 不自动重试；只读列出候选由用户确认；记录 unknown |
-| 19 | 执行记录需要 domain v3 迁移 | v2 待办数据必须保留 | Task 03B 使用 compatibleVersions + 迁移测试；未开始实现 |
+| 13 | 存储写入结果不确定（可能在 rename 之后失败） | 可能误报失败/成功或基于过期内存继续写 | **已修复**：Todo 与执行记录域均区分确定/不确定，关闭重开存储域后按磁盘状态判定；无法恢复时进入保护态要求重启 |
+| 14 | ~~Task 03B 派发主路径依赖 @Remote~~ | — | **已解决**：改用 Client 授权 Remote 链路；Host 仅 public API 校验/持久化 |
+| 15 | Task 03A 预览的信息限制 | 冷会话无标题；归档状态与「已完成轮次」无法在预览阶段确认 | UI 以 warning 明确提示；会话空白三态已修复；真实派发由 Host 重新校验 + Remote 最终裁决 |
+| 16 | Task 03B 方案已确认 | 是否接受 Client `ctx.sessions.create/fork` + `SessionFace.prompt` 的“随版本发布的 Client 契约” | **已确认并实现**；契约风险保留在风险清单，升级 DSH 需回归 |
+| 17 | Client `sessions.create/list` 未出现在 inspect 方法目录 | 可能为未文档化 Client 契约，升级可能变化 | 依赖点集中在 Client 派发编排模块；升级 DSH 时回归；失败时降级“派发不可用” |
+| 18 | Fork 无幂等键 | 未知结果可能重复 child | 不自动重试；Host 只读列出候选，由用户手动绑定；记录 unknown |
+| 19 | ~~执行记录需要 domain v3 迁移~~ | — | **已改为**独立执行记录域 `task_inbox_executions`（v1），Todo 域 v2 不迁移；现有 Todo 数据零改动 |
+| 20 | 真实 GUI 派发与刷新/重启恢复未人工验收 | 首次真实派发风险与恢复流程 | 由用户明确确认后在 GUI 触发验收；开发 Agent 未对真实 Workspace/Session 执行测试 |
+| 21 | Host 无法预检 archive 状态 / 已完成轮次 | 预览/意图校验可能过于乐观 | 由真实 Remote prompt 的 Host 规则最终裁决；失败错误码原样记录 |
 
 注：当前阶段未发布到 npm；安装均以本地插件包绝对路径为准。仓库地址：<https://github.com/CoderL789/dsh-task-inbox>。

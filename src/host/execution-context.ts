@@ -268,6 +268,7 @@ export interface WorkspaceEntityLike {
 
 export interface WorkspaceRegistryLike {
   list(): readonly WorkspaceEntityLike[]
+  get?(id: string): WorkspaceEntityLike | undefined
 }
 
 export interface PersistedSessionLike {
@@ -286,7 +287,9 @@ export interface SessionHandleLike {
   read(
     offset?: number,
     length?: number,
-  ): Promise<{ readonly events: readonly { readonly type: string }[] }>
+  ): Promise<{
+    readonly events: readonly { readonly type: string; readonly data?: unknown }[]
+  }>
   close(): Promise<void>
 }
 
