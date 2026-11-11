@@ -168,6 +168,8 @@ interface ClientExecutionOverviewRecord {
   workspacePath: string
   sourceSessionId?: string
   targetSessionId?: string
+  sourceSessionTitle?: string
+  targetSessionTitle?: string
   bindingSource?: 'client' | 'manual'
   status: DispatchStatus
   errorCode?: string
@@ -4074,6 +4076,14 @@ window.__ModuleLoader__.load({
             return parts[parts.length - 1] ?? record.workspacePath
           }
 
+          function sessionOverviewLabel(sessionId: string | undefined, title?: string): string {
+            if (sessionId === undefined) return t('execution.summary.unset')
+            const shortId = shortSessionId(sessionId)
+            return typeof title === 'string' && title.trim() !== ''
+              ? title.trim() + ' · ' + shortId
+              : shortId
+          }
+
           function getVisibleTodos(): Todo[] {
             const query = searchQuery.trim().toLocaleLowerCase()
             const overviewReady = overviewPhase === 'loaded'
@@ -4294,7 +4304,9 @@ window.__ModuleLoader__.load({
             const metadata = [
               latest === undefined ? t('workbench.detail.unassigned') : workspaceLabel(latest),
               latest === undefined ? null : strategyLabel(t, latest.strategy),
-              latest?.targetSessionId === undefined ? null : shortSessionId(latest.targetSessionId),
+              latest?.targetSessionId === undefined
+                ? null
+                : sessionOverviewLabel(latest.targetSessionId, latest.targetSessionTitle),
             ].filter((value): value is string => value !== null && value !== undefined)
 
             return h(
@@ -4425,7 +4437,14 @@ window.__ModuleLoader__.load({
 
             function renderHistoryRecord(record: ClientExecutionRecord): unknown {
               const expanded = expandedExecutionId === record.executionId
-              const sessionId = record.targetSessionId ?? record.sourceSessionId
+              const overview = executionOverview.find((entry) => entry.executionId === record.executionId)
+              const historySessionMeta =
+                record.sourceSessionId !== undefined && record.sourceSessionId === record.targetSessionId
+                  ? [detailMeta(t('workbench.detail.session'), sessionOverviewLabel(record.sourceSessionId, overview?.sourceSessionTitle ?? overview?.targetSessionTitle))]
+                  : [
+                      detailMeta(t('workbench.detail.sourceSession'), sessionOverviewLabel(record.sourceSessionId, overview?.sourceSessionTitle)),
+                      detailMeta(t('workbench.detail.targetSession'), sessionOverviewLabel(record.targetSessionId, overview?.targetSessionTitle)),
+                    ]
               const events = record.events ?? []
               const canRecover = isUnresolvedExecution(record)
               return h(
@@ -4448,7 +4467,7 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'dti-detail-meta', style: { marginTop: '8px' } },
                   detailMeta(t('workbench.detail.workspace'), record.workspacePath.split(/[\\/]+/).filter(Boolean).pop() ?? record.workspacePath),
                   detailMeta(t('workbench.detail.strategy'), strategyLabel(t, record.strategy)),
-                  detailMeta(t('workbench.detail.session'), sessionId === undefined ? t('execution.summary.unset') : shortSessionId(sessionId)),
+                  ...historySessionMeta,
                 ),
                 expanded
                   ? h('div', null,
@@ -4516,12 +4535,12 @@ window.__ModuleLoader__.load({
                   : h('div', { className: 'dti-detail-meta' },
                       detailMeta(t('workbench.detail.workspace'), workspaceLabel(latest)),
                       detailMeta(t('workbench.detail.strategy'), strategyLabel(t, latest.strategy)),
-                      detailMeta(t('workbench.detail.sourceSession'), latest.sourceSessionId === undefined
-                        ? t('execution.summary.unset')
-                        : shortSessionId(latest.sourceSessionId)),
-                      detailMeta(t('workbench.detail.targetSession'), latest.targetSessionId === undefined
-                        ? t('execution.summary.unset')
-                        : shortSessionId(latest.targetSessionId)),
+                      ...(latest.sourceSessionId !== undefined && latest.sourceSessionId === latest.targetSessionId
+                        ? [detailMeta(t('workbench.detail.session'), sessionOverviewLabel(latest.sourceSessionId, latest.sourceSessionTitle ?? latest.targetSessionTitle))]
+                        : [
+                            detailMeta(t('workbench.detail.sourceSession'), sessionOverviewLabel(latest.sourceSessionId, latest.sourceSessionTitle)),
+                            detailMeta(t('workbench.detail.targetSession'), sessionOverviewLabel(latest.targetSessionId, latest.targetSessionTitle)),
+                          ]),
                       detailMeta(t('workbench.detail.executionTime'), formatCreatedAt(latest.createdAt, dateLocale)),
                       detailMeta(t('workbench.detail.status'), workbenchStatusLabel(latest.status)),
                       latest.errorCode === undefined
