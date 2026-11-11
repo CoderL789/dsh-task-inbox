@@ -494,6 +494,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.detail.edit': 'Edit',
     'workbench.detail.delete': 'Delete',
     'workbench.detail.latestExecution': 'Latest execution',
+    'workbench.detail.overviewLoading': 'Loading latest execution…',
     'workbench.detail.noExecution': 'This task has not been dispatched yet.',
     'workbench.detail.history': 'Execution history',
     'workbench.detail.historyLoading': 'Loading execution history…',
@@ -531,6 +532,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.event.errorCode': 'Error code',
     'workbench.binding.client': 'Client-reported',
     'workbench.binding.manual': 'Manually selected',
+    'workbench.status.undispatched': 'Not dispatched',
     'workbench.status.prepared': 'Prepared',
     'workbench.status.session_ready': 'Session ready',
     'workbench.status.dispatching': 'Dispatching',
@@ -765,6 +767,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.detail.edit': '编辑',
     'workbench.detail.delete': '删除',
     'workbench.detail.latestExecution': '最近一次执行',
+    'workbench.detail.overviewLoading': '正在加载最近一次执行…',
     'workbench.detail.noExecution': '这条待办还没有派发过。',
     'workbench.detail.history': '执行历史',
     'workbench.detail.historyLoading': '正在加载执行历史…',
@@ -802,6 +805,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.event.errorCode': '错误代码',
     'workbench.binding.client': '客户端关联',
     'workbench.binding.manual': '人工选择',
+    'workbench.status.undispatched': '未派发',
     'workbench.status.prepared': '已准备',
     'workbench.status.session_ready': '会话已就绪',
     'workbench.status.dispatching': '派发中',
@@ -4301,13 +4305,15 @@ window.__ModuleLoader__.load({
                   }),
                 )
 
-            const metadata = [
-              latest === undefined ? t('workbench.detail.unassigned') : workspaceLabel(latest),
-              latest === undefined ? null : strategyLabel(t, latest.strategy),
-              latest?.targetSessionId === undefined
-                ? null
-                : sessionOverviewLabel(latest.targetSessionId, latest.targetSessionTitle),
-            ].filter((value): value is string => value !== null && value !== undefined)
+            const metadata = overviewPhase !== 'loaded'
+              ? []
+              : [
+                  latest === undefined ? t('workbench.detail.unassigned') : workspaceLabel(latest),
+                  latest === undefined ? null : strategyLabel(t, latest.strategy),
+                  latest?.targetSessionId === undefined
+                    ? null
+                    : sessionOverviewLabel(latest.targetSessionId, latest.targetSessionTitle),
+                ].filter((value): value is string => value !== null && value !== undefined)
 
             return h(
               'div',
@@ -4332,7 +4338,9 @@ window.__ModuleLoader__.load({
                   { className: 'dti-task-meta' },
                   h('span', null, t('list.createdAt').replace('{time}', formatCreatedAt(todo.createdAt, dateLocale))),
                   ...metadata.map((value, metaIndex) => h('span', { key: metaIndex }, value)),
-                  h('span', { className: 'dti-status dti-status-' + status }, workbenchStatusLabel(status)),
+                  overviewPhase === 'loaded'
+                    ? h('span', { className: 'dti-status dti-status-' + status }, workbenchStatusLabel(status))
+                    : null,
                 ),
               ),
               actions,
@@ -4509,8 +4517,10 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dti-detail-header' },
                 h('h2', { className: 'dti-detail-title' }, t('workbench.detail.title')),
                 h('div', { className: 'dti-detail-header-actions' },
-                  h('span', { className: 'dti-status dti-status-' + (latest?.status ?? 'undispatched') },
-                    workbenchStatusLabel(latest?.status ?? 'undispatched')),
+                  overviewPhase === 'loaded'
+                    ? h('span', { className: 'dti-status dti-status-' + (latest?.status ?? 'undispatched') },
+                        workbenchStatusLabel(latest?.status ?? 'undispatched'))
+                    : null,
                   h('button', {
                     type: 'button',
                     className: 'dti-small-button dti-detail-back',
@@ -4531,7 +4541,12 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dti-detail-section' },
                 h('h3', { className: 'dti-detail-section-title' }, t('workbench.detail.latestExecution')),
                 latest === undefined
-                  ? h('p', { className: 'dti-detail-description' }, overviewPhase === 'error' ? (overviewError ?? t('error.unknown')) : t('workbench.detail.noExecution'))
+                  ? h('p', { className: 'dti-detail-description' },
+                      overviewPhase === 'error'
+                        ? (overviewError ?? t('error.unknown'))
+                        : overviewPhase === 'loaded'
+                          ? t('workbench.detail.noExecution')
+                          : t('workbench.detail.overviewLoading'))
                   : h('div', { className: 'dti-detail-meta' },
                       detailMeta(t('workbench.detail.workspace'), workspaceLabel(latest)),
                       detailMeta(t('workbench.detail.strategy'), strategyLabel(t, latest.strategy)),
