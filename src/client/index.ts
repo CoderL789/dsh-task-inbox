@@ -1239,6 +1239,64 @@ async function callApi<T>(operation: Record<string, unknown>, signal?: AbortSign
   throw new ClientApiError('network', `Request failed (${response.status}).`)
 }
 
+const WORKBENCH_CSS = `
+.dti-workbench{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,380px);gap:18px;align-items:start;min-width:0}
+.dti-workbench-main{min-width:0}
+.dti-stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 16px}
+.dti-stat{min-width:0;padding:13px 15px;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
+.dti-stat-label{font-size:11px;line-height:1.4;color:var(--dsw-alias-label-secondary)}
+.dti-stat-value{margin-top:5px;font-size:23px;font-weight:500;line-height:1.25;font-variant-numeric:tabular-nums}
+.dti-toolbar{display:grid;grid-template-columns:minmax(180px,1fr) repeat(4,minmax(112px,auto));gap:8px;margin:0 0 13px;min-width:0}
+.dti-control{box-sizing:border-box;width:100%;min-width:0;min-height:36px;padding:7px 10px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
+.dti-control:disabled{opacity:.55;cursor:not-allowed}
+.dti-task-list{overflow:hidden;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
+.dti-task-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:13px 14px;border-bottom:.5px solid var(--dsw-alias-border-l1);min-width:0}
+.dti-task-row:last-child{border-bottom:0}
+.dti-task-row.is-selected{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary)}
+.dti-task-select{display:flex;flex-direction:column;gap:4px;min-width:0;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
+.dti-task-title{font-size:14px;font-weight:500;line-height:1.45;overflow-wrap:anywhere}
+.dti-task-description{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.dti-task-meta{display:flex;flex-wrap:wrap;gap:4px 11px;margin-top:2px;font-size:11px;line-height:1.4;color:var(--dsw-alias-label-secondary)}
+.dti-task-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-shrink:0}
+.dti-status{display:inline-flex;align-items:center;min-height:19px;padding:2px 7px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:10px;line-height:1.3;font-weight:500;white-space:nowrap}
+.dti-status-accepted{color:var(--dsw-alias-state-success-primary)}
+.dti-status-failed{color:var(--dsw-alias-state-error-primary)}
+.dti-status-unknown{color:var(--dsw-alias-state-warn-primary)}
+.dti-status-prepared,.dti-status-session_ready,.dti-status-dispatching{color:var(--dsw-alias-brand-primary)}
+.dti-status-undispatched{color:var(--dsw-alias-label-secondary)}
+.dti-detail-pane{position:sticky;top:12px;box-sizing:border-box;min-width:0;max-height:calc(100vh - 24px);overflow:auto;padding:17px;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
+.dti-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.dti-detail-title{margin:0;font-size:16px;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
+.dti-detail-description{margin:9px 0 0;font-size:13px;line-height:1.65;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.dti-detail-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+.dti-detail-section{margin-top:17px;padding-top:14px;border-top:.5px solid var(--dsw-alias-border-l1)}
+.dti-detail-section-title{margin:0 0 10px;font-size:12px;font-weight:500}
+.dti-detail-meta{display:grid;grid-template-columns:minmax(76px,.7fr) minmax(0,1.3fr);gap:8px 12px;font-size:12px;line-height:1.5}
+.dti-detail-key{color:var(--dsw-alias-label-secondary)}
+.dti-detail-value{min-width:0;overflow-wrap:anywhere}
+.dti-history-item{margin-top:8px;padding:10px 11px;border-radius:9px;background:var(--dsw-alias-bg-layer-2)}
+.dti-history-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.dti-history-id{font-size:11px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.dti-history-events{display:flex;flex-direction:column;gap:9px;margin:11px 0 0;padding-left:2px}
+.dti-history-event{display:grid;grid-template-columns:9px minmax(0,1fr);gap:8px;align-items:start}
+.dti-history-dot{width:7px;height:7px;margin-top:5px;border-radius:50%;background:var(--dsw-alias-brand-primary)}
+.dti-history-event-title{font-size:11px;line-height:1.4}
+.dti-history-event-time{margin-top:2px;font-size:10px;color:var(--dsw-alias-label-secondary)}
+.dti-history-footer{display:flex;justify-content:flex-end;margin-top:9px}
+.dti-overview-error{margin:0 0 12px;padding:9px 11px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-warn-primary);font-size:12px}
+.dti-empty-filter{padding:28px 18px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:13px}
+.dti-small-button{min-height:30px;padding:5px 9px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer}
+.dti-primary-button{min-height:34px;padding:7px 12px;border:0;border-radius:8px;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-inverted);font:inherit;font-size:12px;font-weight:500;cursor:pointer}
+.dti-danger-button{min-height:30px;padding:5px 9px;border:.5px solid var(--dsw-alias-state-error-primary);border-radius:7px;background:transparent;color:var(--dsw-alias-state-error-primary);font:inherit;font-size:11px;cursor:pointer}
+.dti-small-button:disabled,.dti-primary-button:disabled,.dti-danger-button:disabled{opacity:.5;cursor:not-allowed}
+.dti-workbench button:focus-visible,.dti-workbench input:focus-visible,.dti-workbench select:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:2px}
+@media (hover:hover){.dti-task-row:not(.is-selected):hover{background:var(--dsw-alias-bg-layer-2)}.dti-small-button:hover:not(:disabled){border-color:var(--dsw-alias-border-l2)}}
+@media (max-width:1080px){.dti-workbench{grid-template-columns:minmax(0,1fr)}.dti-detail-pane{position:static;max-height:none}}
+@media (max-width:720px){.dti-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar .dti-search{grid-column:1/-1}.dti-task-row{grid-template-columns:minmax(0,1fr);align-items:start}.dti-task-actions{justify-content:flex-end}}
+@media (max-width:440px){.dti-toolbar{grid-template-columns:minmax(0,1fr)}.dti-toolbar .dti-search{grid-column:auto}.dti-detail-meta{grid-template-columns:1fr;gap:3px}.dti-detail-value{margin-bottom:6px}}
+@media (prefers-reduced-motion:reduce){.dti-workbench *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+`
+
 function errorCode(error: unknown): string {
   if (error instanceof ClientApiError) return error.code
   return 'unknown'
@@ -3973,63 +4031,233 @@ window.__ModuleLoader__.load({
             )
           }
 
-          function renderRow(todo: Todo, index: number): unknown {
+          function latestExecutionForTodo(todoId: string): ClientExecutionOverviewRecord | undefined {
+            return executionOverview
+              .filter((record) => record.todoId === todoId)
+              .sort((left, right) => right.createdAtMs - left.createdAtMs)[0]
+          }
+
+          function unresolvedExecutionForTodo(todoId: string): ClientExecutionOverviewRecord | undefined {
+            return executionOverview
+              .filter((record) => record.todoId === todoId && UNRESOLVED_EXECUTION_STATUSES.includes(record.status))
+              .sort((left, right) => right.createdAtMs - left.createdAtMs)[0]
+          }
+
+          function workspaceLabel(record: ClientExecutionOverviewRecord): string {
+            const parts = record.workspacePath.split(/[\\/]+/).filter(Boolean)
+            return parts[parts.length - 1] ?? record.workspacePath
+          }
+
+          function getVisibleTodos(): Todo[] {
+            const query = searchQuery.trim().toLocaleLowerCase()
+            const overviewReady = overviewPhase === 'loaded'
+            const filtered = todos.filter((todo) => {
+              if (query !== '' && !todo.title.toLocaleLowerCase().includes(query) &&
+                !todo.description.toLocaleLowerCase().includes(query)) return false
+
+              if (!overviewReady && (statusFilter !== 'all' || workspaceFilter !== '' || strategyFilter !== 'all')) {
+                return false
+              }
+
+              const records = executionOverview.filter((record) => record.todoId === todo.id)
+              const latest = latestExecutionForTodo(todo.id)
+              if (statusFilter === 'undispatched' && records.length !== 0) return false
+              if (statusFilter === 'unresolved' && !records.some((record) => UNRESOLVED_EXECUTION_STATUSES.includes(record.status))) return false
+              if (statusFilter === 'accepted' && latest?.status !== 'accepted') return false
+              if (workspaceFilter === '__unassigned__' && latest !== undefined) return false
+              if (workspaceFilter !== '' && workspaceFilter !== '__unassigned__' && latest?.workspaceId !== workspaceFilter) return false
+              if (strategyFilter !== 'all' && latest?.strategy !== strategyFilter) return false
+              return true
+            })
+
+            if (sortMode === 'created') {
+              return filtered.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+            }
+            if (sortMode === 'recent') {
+              return filtered.sort((left, right) => {
+                const leftTime = Math.max(Date.parse(left.updatedAt), Date.parse(latestExecutionForTodo(left.id)?.updatedAt ?? left.updatedAt))
+                const rightTime = Math.max(Date.parse(right.updatedAt), Date.parse(latestExecutionForTodo(right.id)?.updatedAt ?? right.updatedAt))
+                return rightTime - leftTime
+              })
+            }
+            return sortTodos(filtered)
+          }
+
+          function renderOverview(): unknown {
+            const undispatched = overviewPhase === 'loaded'
+              ? todos.filter((todo) => !executionOverview.some((record) => record.todoId === todo.id)).length
+              : '—'
+            const unresolved = overviewPhase === 'loaded'
+              ? todos.filter((todo) => unresolvedExecutionForTodo(todo.id) !== undefined).length
+              : '—'
+            const accepted = overviewPhase === 'loaded'
+              ? todos.filter((todo) => latestExecutionForTodo(todo.id)?.status === 'accepted').length
+              : '—'
+            const stats = [
+              [t('workbench.stats.total'), String(todos.length)],
+              [t('workbench.stats.undispatched'), String(undispatched)],
+              [t('workbench.stats.unresolved'), String(unresolved)],
+              [t('workbench.stats.accepted'), String(accepted)],
+            ]
+            return h(
+              'div',
+              null,
+              overviewPhase === 'error'
+                ? h(
+                    'div',
+                    { className: 'dti-overview-error', role: 'alert' },
+                    overviewError ?? t('error.unknown'),
+                    ' ',
+                    h('button', {
+                      type: 'button',
+                      className: 'dti-small-button',
+                      onClick: () => void loadExecutionOverview(),
+                    }, t('workbench.detail.retry')),
+                  )
+                : null,
+              h(
+                'div',
+                { className: 'dti-stat-grid' },
+                ...stats.map(([label, value]) =>
+                  h(
+                    'div',
+                    { key: label, className: 'dti-stat' },
+                    h('div', { className: 'dti-stat-label' }, label),
+                    h('div', { className: 'dti-stat-value' }, value),
+                  ),
+                ),
+              ),
+            )
+          }
+
+          function renderToolbar(): unknown {
+            const workspaceOptions = new Map<string, string>()
+            for (const record of todos
+              .map((todo) => latestExecutionForTodo(todo.id))
+              .filter((record): record is ClientExecutionOverviewRecord => record !== undefined)) {
+              if (!workspaceOptions.has(record.workspaceId)) workspaceOptions.set(record.workspaceId, workspaceLabel(record))
+            }
+            return h(
+              'div',
+              { className: 'dti-toolbar' },
+              h('input', {
+                className: 'dti-control dti-search',
+                type: 'search',
+                value: searchQuery,
+                placeholder: t('workbench.search.placeholder'),
+                'aria-label': t('workbench.search.placeholder'),
+                onChange: (event: { target: { value: string } }) => setSearchQuery(event.target.value),
+              }),
+              h(
+                'select',
+                {
+                  className: 'dti-control',
+                  value: statusFilter,
+                  'aria-label': t('workbench.filter.status'),
+                  disabled: overviewPhase !== 'loaded',
+                  onChange: (event: { target: { value: string } }) =>
+                    setStatusFilter(event.target.value as typeof statusFilter),
+                },
+                h('option', { value: 'all' }, t('workbench.filter.all')),
+                h('option', { value: 'undispatched' }, t('workbench.filter.undispatched')),
+                h('option', { value: 'unresolved' }, t('workbench.filter.unresolved')),
+                h('option', { value: 'accepted' }, t('workbench.filter.accepted')),
+              ),
+              h(
+                'select',
+                {
+                  className: 'dti-control',
+                  value: workspaceFilter,
+                  'aria-label': t('workbench.filter.workspace'),
+                  disabled: overviewPhase !== 'loaded',
+                  onChange: (event: { target: { value: string } }) => setWorkspaceFilter(event.target.value),
+                },
+                h('option', { value: '' }, t('workbench.filter.allWorkspaces')),
+                h('option', { value: '__unassigned__' }, t('workbench.filter.unassigned')),
+                ...[...workspaceOptions.entries()].sort((left, right) => left[1].localeCompare(right[1])).map(([id, label]) =>
+                  h('option', { key: id, value: id }, label),
+                ),
+              ),
+              h(
+                'select',
+                {
+                  className: 'dti-control',
+                  value: strategyFilter,
+                  'aria-label': t('workbench.filter.strategy'),
+                  disabled: overviewPhase !== 'loaded',
+                  onChange: (event: { target: { value: string } }) =>
+                    setStrategyFilter(event.target.value as typeof strategyFilter),
+                },
+                h('option', { value: 'all' }, t('workbench.filter.allStrategies')),
+                h('option', { value: 'new' }, strategyLabel(t, 'new')),
+                h('option', { value: 'reuse' }, strategyLabel(t, 'reuse')),
+                h('option', { value: 'fork' }, strategyLabel(t, 'fork')),
+              ),
+              h(
+                'select',
+                {
+                  className: 'dti-control',
+                  value: sortMode,
+                  'aria-label': t('workbench.sort.label'),
+                  onChange: (event: { target: { value: string } }) =>
+                    setSortMode(event.target.value as typeof sortMode),
+                },
+                h('option', { value: 'manual' }, t('workbench.sort.manual')),
+                h('option', { value: 'recent' }, t('workbench.sort.recent')),
+                h('option', { value: 'created' }, t('workbench.sort.created')),
+              ),
+            )
+          }
+
+          function renderRow(todo: Todo, index: number, visibleTodos: Todo[]): unknown {
             const busy = busyId === todo.id
             const confirming = confirmId === todo.id
+            const latest = latestExecutionForTodo(todo.id)
+            const unresolved = unresolvedExecutionForTodo(todo.id)
+            const status = unresolved?.status ?? latest?.status ?? 'undispatched'
+            const selected = selectedTodoId === todo.id
+            const canReorder =
+              sortMode === 'manual' &&
+              searchQuery.trim() === '' &&
+              statusFilter === 'all' &&
+              workspaceFilter === '' &&
+              strategyFilter === 'all'
 
             const actions = confirming
               ? h(
                   'div',
-                  {
-                    style: STYLES.rowActions,
-                    onKeyDown: (event: { key?: string }) => {
-                      if (event.key === 'Escape') setConfirmId(null)
-                    },
-                  },
+                  { className: 'dti-task-actions', onKeyDown: (event: { key?: string }) => {
+                    if (event.key === 'Escape') setConfirmId(null)
+                  } },
                   h('span', { style: STYLES.confirmText }, t('list.confirmDelete')),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: {
-                        ...STYLES.dangerButton,
-                        ...(busy ? { opacity: 0.6 } : {}),
-                      },
-                      onClick: () => void removeTodo(todo.id),
-                      disabled: busy,
-                      'aria-busy': busy,
-                    },
-                    busy ? t('form.saving') : t('list.deleteConfirm'),
-                  ),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: STYLES.secondaryButton,
-                      onClick: () => setConfirmId(null),
-                      disabled: busy,
-                    },
-                    t('list.deleteCancel'),
-                  ),
+                  h('button', {
+                    type: 'button',
+                    className: 'dti-danger-button',
+                    onClick: () => void removeTodo(todo.id),
+                    disabled: busy,
+                    'aria-busy': busy,
+                  }, busy ? t('form.saving') : t('list.deleteConfirm')),
+                  h('button', {
+                    type: 'button',
+                    className: 'dti-small-button',
+                    onClick: () => setConfirmId(null),
+                    disabled: busy,
+                  }, t('list.deleteCancel')),
                 )
               : h(
                   'div',
-                  { style: STYLES.rowActions },
-                  iconButton(t('execution.action'), ICON_PLAY, () => openExecution(todo), {
-                    disabled: busy,
-                  }),
-                  iconButton(
-                    t('list.moveUp'),
-                    ICON_UP,
-                    () => void moveTodo(todo.id, 'up'),
-                    { disabled: index === 0 || busy },
-                  ),
-                  iconButton(
-                    t('list.moveDown'),
-                    ICON_DOWN,
-                    () => void moveTodo(todo.id, 'down'),
-                    { disabled: index === todos.length - 1 || busy },
-                  ),
+                  { className: 'dti-task-actions' },
+                  iconButton(t('execution.action'), ICON_PLAY, () => openExecution(todo), { disabled: busy }),
+                  canReorder
+                    ? iconButton(t('list.moveUp'), ICON_UP, () => void moveTodo(todo.id, 'up'), {
+                        disabled: index === 0 || busy,
+                      })
+                    : null,
+                  canReorder
+                    ? iconButton(t('list.moveDown'), ICON_DOWN, () => void moveTodo(todo.id, 'down'), {
+                        disabled: index === visibleTodos.length - 1 || busy,
+                      })
+                    : null,
                   iconButton(t('list.edit'), ICON_EDIT, () => openEdit(todo), { disabled: busy }),
                   iconButton(t('list.delete'), ICON_TRASH, () => setConfirmId(todo.id), {
                     disabled: busy,
@@ -4037,52 +4265,60 @@ window.__ModuleLoader__.load({
                   }),
                 )
 
+            const metadata = [
+              latest === undefined ? t('workbench.detail.unassigned') : workspaceLabel(latest),
+              latest === undefined ? null : strategyLabel(t, latest.strategy),
+              latest?.targetSessionId === undefined ? null : shortSessionId(latest.targetSessionId),
+            ].filter((value): value is string => value !== null && value !== undefined)
+
             return h(
               'div',
               {
                 key: todo.id,
-                style: index === 0 ? { ...STYLES.row, borderTop: 'none' } : STYLES.row,
+                className: 'dti-task-row' + (selected ? ' is-selected' : ''),
               },
               h(
-                'div',
-                { style: STYLES.rowMain },
-                h('div', { style: STYLES.rowTitle }, todo.title),
+                'button',
+                {
+                  type: 'button',
+                  className: 'dti-task-select',
+                  onClick: () => setSelectedTodoId(todo.id),
+                  'aria-pressed': selected,
+                },
+                h('span', { className: 'dti-task-title' }, todo.title),
                 todo.description === ''
                   ? null
-                  : h('div', { style: STYLES.rowDescription }, todo.description),
+                  : h('span', { className: 'dti-task-description' }, todo.description),
                 h(
-                  'div',
-                  { style: STYLES.rowMeta },
-                  t('list.createdAt').replace(
-                    '{time}',
-                    formatCreatedAt(todo.createdAt, dateLocale),
-                  ),
+                  'span',
+                  { className: 'dti-task-meta' },
+                  h('span', null, t('list.createdAt').replace('{time}', formatCreatedAt(todo.createdAt, dateLocale))),
+                  ...metadata.map((value, metaIndex) => h('span', { key: metaIndex }, value)),
+                  h('span', { className: 'dti-status dti-status-' + status }, workbenchStatusLabel(status)),
                 ),
               ),
               actions,
             )
           }
 
+          function workbenchStatusLabel(status: string): string {
+            const key = 'workbench.status.' + status
+            const label = t(key)
+            return label === key ? describeDispatchStatus(status) : label
+          }
+
           function renderEmpty(): unknown {
             return h(
               'div',
               { style: STYLES.emptyCard },
-              h(
-                'div',
-                { style: STYLES.emptyIcon },
-                h(TaskInboxIcon, { size: 28, active: false }),
-              ),
+              h('div', { style: STYLES.emptyIcon }, h(TaskInboxIcon, { size: 28, active: false })),
               h('h2', { style: STYLES.emptyTitle }, t('list.empty.title')),
               h('p', { style: STYLES.emptyText }, t('list.empty.description')),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  style: { ...STYLES.primaryButton, marginTop: '18px' },
-                  onClick: openCreate,
-                },
-                t('list.empty.action'),
-              ),
+              h('button', {
+                type: 'button',
+                className: 'dti-primary-button',
+                onClick: openCreate,
+              }, t('list.empty.action')),
             )
           }
 
@@ -4094,34 +4330,171 @@ window.__ModuleLoader__.load({
               return h(
                 'div',
                 { style: STYLES.card },
-                h(
-                  'p',
-                  { role: 'alert', style: STYLES.errorText },
-                  loadError === 'unknown' || loadError === ''
-                    ? t('error.loadFailed')
-                    : messageForCode(t, loadError),
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    style: { ...STYLES.secondaryButton, marginTop: '12px' },
-                    onClick: () => void load(),
-                  },
-                  t('list.retry'),
-                ),
+                h('p', { role: 'alert', style: STYLES.errorText },
+                  loadError === 'unknown' || loadError === '' ? t('error.loadFailed') : messageForCode(t, loadError)),
+                h('button', {
+                  type: 'button',
+                  className: 'dti-small-button',
+                  onClick: () => void load(),
+                }, t('list.retry')),
               )
             }
             if (todos.length === 0) return renderEmpty()
+            const visibleTodos = getVisibleTodos()
+            if (visibleTodos.length === 0) {
+              return h(
+                'div',
+                { className: 'dti-task-list' },
+                h('div', { className: 'dti-empty-filter' },
+                  t('workbench.list.noResults'),
+                  h('div', { style: { marginTop: '10px' } },
+                    h('button', { type: 'button', className: 'dti-small-button', onClick: clearWorkbenchFilters },
+                      t('workbench.list.clearFilters')),
+                  ),
+                ),
+              )
+            }
             return h(
               'div',
               null,
-              h(
-                'p',
-                { style: STYLES.count },
-                t('list.count').replace('{n}', String(todos.length)),
+              h('div', { style: STYLES.count },
+                t('workbench.list.count')
+                  .replace('{visible}', String(visibleTodos.length))
+                  .replace('{total}', String(todos.length))),
+              h('div', { className: 'dti-task-list' },
+                ...visibleTodos.map((todo, index) => renderRow(todo, index, visibleTodos))),
+            )
+          }
+
+          function renderDetailPanel(): unknown {
+            const todo = todos.find((entry) => entry.id === selectedTodoId)
+            if (todo === undefined) {
+              return h('aside', { className: 'dti-detail-pane' },
+                h('h2', { className: 'dti-detail-title' }, t('workbench.detail.title')),
+                h('p', { className: 'dti-detail-description' }, t('workbench.detail.selectHint')),
+              )
+            }
+
+            const latest = latestExecutionForTodo(todo.id)
+            const confirming = confirmId === todo.id
+            const history = detailExecutions.slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+            const detailActions = confirming
+              ? h('div', { className: 'dti-detail-actions' },
+                  h('span', { style: STYLES.confirmText }, t('list.confirmDelete')),
+                  h('button', { type: 'button', className: 'dti-danger-button', onClick: () => void removeTodo(todo.id), disabled: busyId === todo.id }, t('list.deleteConfirm')),
+                  h('button', { type: 'button', className: 'dti-small-button', onClick: () => setConfirmId(null), disabled: busyId === todo.id }, t('list.deleteCancel')),
+                )
+              : h('div', { className: 'dti-detail-actions' },
+                  h('button', { type: 'button', className: 'dti-primary-button', onClick: () => openExecution(todo) }, t('workbench.detail.execute')),
+                  h('button', { type: 'button', className: 'dti-small-button', onClick: () => openEdit(todo) }, t('workbench.detail.edit')),
+                  h('button', { type: 'button', className: 'dti-small-button', onClick: () => setConfirmId(todo.id) }, t('workbench.detail.delete')),
+                )
+
+            function detailMeta(label: string, value: string): unknown {
+              return h(React.Fragment, null,
+                h('div', { className: 'dti-detail-key' }, label),
+                h('div', { className: 'dti-detail-value' }, value),
+              )
+            }
+
+            function renderHistoryRecord(record: ClientExecutionRecord): unknown {
+              const expanded = expandedExecutionId === record.executionId
+              const sessionId = record.targetSessionId ?? record.sourceSessionId
+              const events = record.events ?? []
+              const canRecover = isUnresolvedExecution(record)
+              return h(
+                'div',
+                { key: record.executionId, className: 'dti-history-item' },
+                h('div', { className: 'dti-history-top' },
+                  h('div', null,
+                    h('div', { className: 'dti-history-id' }, shortExecutionId(record.executionId)),
+                    h('span', { className: 'dti-status dti-status-' + record.status }, workbenchStatusLabel(record.status)),
+                  ),
+                  h('button', {
+                    type: 'button',
+                    className: 'dti-small-button',
+                    onClick: () => setExpandedExecutionId(expanded ? null : record.executionId),
+                    'aria-expanded': expanded,
+                  }, expanded ? '−' : '+'),
+                ),
+                h('div', { className: 'dti-detail-meta', style: { marginTop: '8px' } },
+                  detailMeta(t('workbench.detail.workspace'), record.workspacePath.split(/[\\/]+/).filter(Boolean).pop() ?? record.workspacePath),
+                  detailMeta(t('workbench.detail.strategy'), strategyLabel(t, record.strategy)),
+                  detailMeta(t('workbench.detail.session'), sessionId === undefined ? t('execution.summary.unset') : shortSessionId(sessionId)),
+                ),
+                expanded
+                  ? h('div', null,
+                      events.length === 0
+                        ? h('p', { className: 'dti-detail-description' }, t('workbench.detail.noEvents'))
+                        : h('div', { className: 'dti-history-events' },
+                            ...events.map((event) => {
+                              const key = 'workbench.event.' + event.kind
+                              const label = t(key)
+                              return h('div', { key: event.eventId, className: 'dti-history-event' },
+                                h('span', { className: 'dti-history-dot' }),
+                                h('div', null,
+                                  h('div', { className: 'dti-history-event-title' }, label === key ? event.kind : label),
+                                  h('div', { className: 'dti-history-event-time' }, formatCreatedAt(event.at, dateLocale)),
+                                  event.errorCode === undefined ? null : h('div', { className: 'dti-history-event-time' }, event.errorCode),
+                                ),
+                              )
+                            }),
+                          ),
+                      canRecover
+                        ? h('div', { className: 'dti-history-footer' },
+                            h('button', { type: 'button', className: 'dti-small-button', onClick: () => openExecution(todo, record.executionId) },
+                              t('workbench.detail.openExecution')),
+                          )
+                        : null,
+                    )
+                  : null,
+              )
+            }
+
+            return h(
+              'aside',
+              { className: 'dti-detail-pane' },
+              h('div', { className: 'dti-detail-header' },
+                h('h2', { className: 'dti-detail-title' }, t('workbench.detail.title')),
+                h('span', { className: 'dti-status dti-status-' + (latest?.status ?? 'undispatched') },
+                  workbenchStatusLabel(latest?.status ?? 'undispatched')),
               ),
-              h('div', { style: STYLES.list }, ...todos.map((todo, index) => renderRow(todo, index))),
+              h('p', { className: 'dti-detail-title', style: { marginTop: '13px' } }, todo.title),
+              todo.description === '' ? null : h('p', { className: 'dti-detail-description' }, todo.description),
+              detailActions,
+              h('div', { className: 'dti-detail-section' },
+                h('h3', { className: 'dti-detail-section-title' }, t('workbench.detail.title')),
+                h('div', { className: 'dti-detail-meta' },
+                  detailMeta(t('workbench.detail.createdAt'), formatCreatedAt(todo.createdAt, dateLocale)),
+                  detailMeta(t('workbench.detail.updatedAt'), formatCreatedAt(todo.updatedAt, dateLocale)),
+                ),
+              ),
+              h('div', { className: 'dti-detail-section' },
+                h('h3', { className: 'dti-detail-section-title' }, t('workbench.detail.latestExecution')),
+                latest === undefined
+                  ? h('p', { className: 'dti-detail-description' }, overviewPhase === 'error' ? (overviewError ?? t('error.unknown')) : t('workbench.detail.noExecution'))
+                  : h('div', { className: 'dti-detail-meta' },
+                      detailMeta(t('workbench.detail.workspace'), workspaceLabel(latest)),
+                      detailMeta(t('workbench.detail.strategy'), strategyLabel(t, latest.strategy)),
+                      detailMeta(t('workbench.detail.session'), latest.targetSessionId ?? latest.sourceSessionId
+                        ? shortSessionId((latest.targetSessionId ?? latest.sourceSessionId) as string)
+                        : t('execution.summary.unset')),
+                      detailMeta(t('workbench.detail.status'), workbenchStatusLabel(latest.status)),
+                    ),
+              ),
+              h('div', { className: 'dti-detail-section' },
+                h('h3', { className: 'dti-detail-section-title' }, t('workbench.detail.history')),
+                detailHistoryPhase === 'loading'
+                  ? h('p', { className: 'dti-detail-description' }, t('workbench.detail.historyLoading'))
+                  : detailHistoryPhase === 'error'
+                    ? h('div', null,
+                        h('p', { role: 'alert', className: 'dti-detail-description' }, detailHistoryError ?? t('workbench.detail.historyError')),
+                        h('button', { type: 'button', className: 'dti-small-button', onClick: () => void loadDetailHistory(todo.id) }, t('workbench.detail.retry')),
+                      )
+                    : history.length === 0
+                      ? h('p', { className: 'dti-detail-description' }, t('workbench.detail.noExecution'))
+                      : h('div', null, ...history.map(renderHistoryRecord)),
+              ),
             )
           }
 
@@ -4129,9 +4502,10 @@ window.__ModuleLoader__.load({
           return h(
             'section',
             { style: STYLES.page, 'data-dsh-plugin': PACKAGE_ID },
+            h('style', null, WORKBENCH_CSS),
             h(
               'div',
-              { style: STYLES.frame },
+              { style: { ...STYLES.frame, maxWidth: '1440px', width: '100%' } },
               h(
                 'header',
                 { style: STYLES.header },
@@ -4145,10 +4519,7 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     type: 'button',
-                    style: {
-                      ...STYLES.primaryButton,
-                      ...(addButtonDisabled ? { opacity: 0.55, cursor: 'default' } : {}),
-                    },
+                    className: 'dti-primary-button',
                     onClick: openCreate,
                     disabled: addButtonDisabled,
                   },
@@ -4158,7 +4529,21 @@ window.__ModuleLoader__.load({
               ),
               renderBanner(),
               executionTarget === null ? renderEditor() : null,
-              executionTarget === null ? renderList() : renderExecutionPanel(),
+              executionTarget === null
+                ? h(
+                    'div',
+                    { className: 'dti-workbench' },
+                    h(
+                      'main',
+                      { className: 'dti-workbench-main' },
+                      renderOverview(),
+                      renderToolbar(),
+                      h('h2', { className: 'dti-detail-section-title', style: { marginBottom: '9px' } }, t('workbench.list.title')),
+                      renderList(),
+                    ),
+                    renderDetailPanel(),
+                  )
+                : renderExecutionPanel(),
             ),
           )
         }
