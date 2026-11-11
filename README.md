@@ -26,8 +26,8 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 | 概念 | 含义 |
 | --- | --- |
 | **待办（Todo）** | 一条独立收集的待执行事项，归属于插件而非任何会话；可新建、编辑、删除、排序（Task 02 已实现）。 |
-| **工作区（Workspace）** | 执行待办时选择的文件上下文（工作目录），决定 Agent 在哪个项目里干活（规划于 Task 03）。 |
-| **会话绑定（Session Binding）** | 待办实际执行时选择的会话策略（新建 / 复用 / Fork）以及绑定到的具体会话（规划于 Task 03）。 |
+| **工作区（Workspace）** | 执行待办时选择的文件上下文（工作目录），决定 Agent 在哪个项目里干活；只记录在 Execution，不永久绑定 Todo。 |
+| **会话绑定（Session Binding）** | 执行时选择的新建 / 复用 / Fork 策略，以及本次 Execution 的来源 / 目标 Session；不永久绑定 Todo。 |
 | **执行记录（Execution）** | 一次派发的状态、工作区、来源 / 目标会话和有证据的事件时间线；Agent Turn 与完成结果属于 Task 04。 |
 
 ## 当前阶段与功能矩阵
@@ -35,7 +35,7 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 当前插件包版本仍为 **0.4.7**。Task 03B 派发链路已实现；Task 03C 主体实现位于 `feature/task-03c-modern-workbench`，最新 CI 的 build / typecheck / check / test 已通过。当前仍待 DSH GUI 人工验收；本分支提交的 `lib/` 尚未由最新 `src/` 重新生成。当前已具备：
 
 - 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.7`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
-- **Host 半区**：Todo 存储域 `task_inbox` 保持 v2 不变、**不迁移/不重写**；新增独立执行记录域 `task_inbox_executions`（v1、JSON 单文件），用于执行意图/关联/状态持久化。Host 通过受认证 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 提供 Todo CRUD、只读 `execution-context`、`execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` 等协调操作；派发前用 public Host 服务重新校验 Todo/Workspace/Session，并**只读扫描 Session 日志中的 requestId（user/message source.rpcId）独立核验接受结果**；
+- **Host 半区**：Todo 存储域 `task_inbox` 保持 v2 不变、**不迁移/不重写**；新增独立执行记录域 `task_inbox_executions`（v1、JSON 单文件），用于执行意图/关联/状态持久化。Host 通过受认证 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 提供 Todo CRUD、只读 `execution-context`、`execution-overview` / `execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` 等协调操作；派发前用 public Host 服务重新校验 Todo/Workspace/Session，并**只读扫描 Session 日志中的 requestId（user/message source.rpcId）独立核验接受结果**；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；Todo CRUD；Modern Workbench（概览、搜索、状态 / Workspace / 策略筛选、排序、待办列表、响应式详情视图）；详情展示最近执行摘要、来源 / 目标 Session、执行历史和事件时间线；执行配置改为参数区 + 摘要区双栏布局；「确认并派发」继续通过 `ctx.sessions.create/fork`（正常 Remote 授权链路）+ `ctx.sessions.retain` + `SessionFace.prompt(..., requestId)` 完成新建/复用/Fork 派发；派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、候选会话人工核对/绑定与安全继续；中英文与 DSH 明暗主题 token 适配；
 - 数据模型：Todo 字段不变；执行记录包含 `executionId`、稳定的 `requestId`、`clientRequestId`、Todo 快照、策略、Workspace 快照、来源/目标 Session、状态（prepared/session_ready/dispatching/accepted/failed/unknown）、错误码与时间戳；
 - Node 测试覆盖 Todo / 存储 / 迁移 / HTTP、执行上下文、派发前置校验、Host 状态机并发 / 恢复 / 核验 / 放弃 / 候选绑定 / 执行权租约 / Prompt 重试授权、Execution 事件向后兼容、overview 只读字段与 Session 标题降级，以及 Client 派发编排异常路径；最新 CI 已通过全量测试。
@@ -73,19 +73,18 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 2. 点击 **新增待办**，填写标题（必填，最多 200 字）与描述（可选，最多 2000 字）后保存；
 3. 首页展示待办概览和列表；可按标题 / 描述搜索，并按执行状态、最近使用的 Workspace、策略筛选，或按手动顺序 / 最近更新 / 创建时间排序；
 4. 选择待办后查看详情：完整描述、最近一次执行摘要、来源 / 目标 Session 和历史执行时间线；窄窗口下详情切换为独立视图，可返回列表；
-6. 每条待办仍可手动上移 / 下移、编辑、删除；删除需要二次确认：点击删除后行内出现「确认删除 / 取消」，确认后才会删除；
+5. 每条待办仍可手动上移 / 下移、编辑、删除；删除需要二次确认：点击删除后行内出现「确认删除 / 取消」，确认后才会删除；
 6. 所有写操作成功后显示短暂成功提示；失败时显示错误提示，且不会把失败显示成成功；
 7. 添加待办只保存数据，**不会自动执行 Agent**；
-8. 点击待办行上的「执行」图标打开执行前配置：选择工作区、会话策略（新建 / 复用 / Fork）与来源会话，查看摘要与校验提示；
-9. 点击「确认并派发」后：Host 先重新校验并保存执行意图（同一 Todo 若已有未解决执行会被服务端拒绝）；Client 通过 DSH 正常 Remote 授权链路创建/复用/Fork Session（新建使用实际返回的 Session ID；Fork 默认 `allowMigration:false`），先持久化目标 Session 再以同一 `requestId` 通过 `SessionFace.prompt(..., 'queue')` 发送任务；Host 再从 Session 日志独立核验是否被接受；
-10. 结果未确认时（unknown / dispatching / session_ready / prepared）**不会直接允许重新创建/Fork**：界面优先提供「检查状态」「继续派发」「核对候选会话/绑定」「恢复已有执行」；若要发起全新执行，必须先显式「放弃此执行」（二次确认；已创建的会话不会被删除）；
-11. 执行配置页的「历史未解决执行」区域会列出当前 Todo 的全部 prepared / session_ready / dispatching / unknown 执行（即使最新一条已 accepted 也不会隐藏较早的未解决记录）。选择一条只查看/恢复，不会自动创建、Fork 或发送；复用记录若 targetSessionId 缺失，可用「恢复绑定并继续派发」并在二次确认后恢复原来源 Session（不会创建新会话）；
-12. 执行详情区分「来源会话」与「目标会话」：新建仅显示目标；复用时可合并展示来源/目标；Fork 分别显示来源与目标；未命名会话优先显示短 Session ID/创建时间；
+8. 点击待办行上的「执行」图标，或详情面板中的「配置执行」，打开执行配置工作区：选择工作区、会话策略（新建 / 复用 / Fork）与来源会话，查看摘要和校验提示；
+9. 点击「确认并派发」后：Host 先重新校验并保存执行意图（同一 Todo 若已有未解决执行会被服务端拒绝）；Client 通过 DSH 正常 Remote 授权链路创建 / 复用 / Fork Session（新建使用实际返回的 Session ID；Fork 默认 `allowMigration:false`），先持久化目标 Session 再以同一 `requestId` 通过 `SessionFace.prompt(..., 'queue')` 发送任务；Host 再从 Session 日志独立核验是否被接受；
+10. 结果未确认时（unknown / dispatching / session_ready / prepared）**不会直接允许重新创建 / Fork**：界面优先提供「检查状态」「继续派发」「核对候选会话 / 绑定」「恢复已有执行」；若要发起全新执行，必须先显式「放弃此执行」（二次确认；已创建的会话不会被删除）；
+11. 执行配置页的「历史未解决执行」区域会列出当前 Todo 的全部 prepared / session_ready / dispatching / unknown 执行（即使最新一条已 accepted 也不会隐藏较早的未解决记录）。选择一条只查看 / 恢复，不会自动创建、Fork 或发送；复用记录若 targetSessionId 缺失，可用「恢复绑定并继续派发」并在二次确认后恢复原来源 Session（不会创建新会话）；
+12. 执行详情区分「来源会话」与「目标会话」：新建仅显示目标；复用时可合并展示来源 / 目标；Fork 分别显示来源与目标；未命名会话优先显示短 Session ID / 创建时间；
 13. 执行配置页始终显示历史区域状态：加载中、加载失败（可重试）或「暂无未解决执行」；Host 派发能力不可用时显示具体原因并禁用派发，重新检查成功后才可继续；
 14. 来源会话下拉框每个选项都带可区分短 Session ID（默认 8 位，冲突时自动延长），并按完整 Session ID 去重；不会因名称相同合并不同会话；
-15. Prompt 已被 DSH 接受但 Host 结果写入失败时，记录保持 `dispatching` 并保留 executionId/requestId/目标 Session，稍后可通过「检查状态」按日志核验，不会重新创建会话；
-16. 开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发及恢复验收需由你明确点击确认触发。
-
+15. Prompt 已被 DSH 接受但 Host 结果写入失败时，记录保持 `dispatching` 并保留 executionId / requestId / 目标 Session，稍后可通过「检查状态」按日志核验，不会重新创建会话；
+16. 开发 Agent 未对真实 Workspace / Session 发起过测试执行；首次真实派发及恢复验收需由你明确点击确认触发。
 ## 数据、备份与卸载
 
 - **数据位置**：
