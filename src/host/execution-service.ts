@@ -914,22 +914,43 @@ export class ExecutionService {
 
   /** Lightweight cross-Todo read model for the workbench overview; excludes prompt text and timeline payloads. */
   listOverview(): ExecutionOverviewRecord[] {
+    const sessions = this.currentSessions()
+    const titleService = this.currentSessionTitle()
+    const readSessionTitle = (sessionId: string | undefined): string | undefined => {
+      if (sessionId === undefined || sessions === undefined || titleService === undefined) return undefined
+      try {
+        const liveSession = sessions.get(sessionId)
+        if (liveSession === undefined) return undefined
+        const title = titleService.get(liveSession)?.title
+        return typeof title === 'string' && title.trim() !== '' ? title : undefined
+      } catch {
+        // Session titles are presentation-only; a lookup failure must not fail the overview.
+        return undefined
+      }
+    }
+
     return this.options.store.read()
-      .map((record) => ({
-        executionId: record.executionId,
-        todoId: record.todoId,
-        strategy: record.strategy,
-        workspaceId: record.workspaceId,
-        workspacePath: record.workspacePath,
-        ...(record.sourceSessionId === undefined ? {} : { sourceSessionId: record.sourceSessionId }),
-        ...(record.targetSessionId === undefined ? {} : { targetSessionId: record.targetSessionId }),
-        ...(record.bindingSource === undefined ? {} : { bindingSource: record.bindingSource }),
-        status: record.status,
-        ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }),
-        createdAt: record.createdAt,
-        updatedAt: record.updatedAt,
-        createdAtMs: record.createdAtMs,
-      }))
+      .map((record) => {
+        const sourceSessionTitle = readSessionTitle(record.sourceSessionId)
+        const targetSessionTitle = readSessionTitle(record.targetSessionId)
+        return {
+          executionId: record.executionId,
+          todoId: record.todoId,
+          strategy: record.strategy,
+          workspaceId: record.workspaceId,
+          workspacePath: record.workspacePath,
+          ...(record.sourceSessionId === undefined ? {} : { sourceSessionId: record.sourceSessionId }),
+          ...(record.targetSessionId === undefined ? {} : { targetSessionId: record.targetSessionId }),
+          ...(sourceSessionTitle === undefined ? {} : { sourceSessionTitle }),
+          ...(targetSessionTitle === undefined ? {} : { targetSessionTitle }),
+          ...(record.bindingSource === undefined ? {} : { bindingSource: record.bindingSource }),
+          status: record.status,
+          ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }),
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          createdAtMs: record.createdAtMs,
+        }
+      })
       .sort((left, right) => right.createdAtMs - left.createdAtMs)
   }
 
