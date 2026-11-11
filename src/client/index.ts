@@ -2252,9 +2252,9 @@ window.__ModuleLoader__.load({
           }, [selectedTodoId])
 
           React.useEffect(() => {
-            if (executionTarget === null || historyPhase !== 'loaded') return
+            if (historyPhase !== 'loaded') return
             void loadExecutionOverview()
-          }, [executionHistory, executionTarget, historyPhase])
+          }, [executionHistory, historyPhase])
 
           React.useEffect(() => {
             if (editorMode !== null) titleInputRef.current?.focus()
@@ -2298,6 +2298,10 @@ window.__ModuleLoader__.load({
           }
 
           async function loadDetailHistory(todoId: string, signal?: AbortSignal): Promise<void> {
+            if (signal === undefined) {
+              setDetailHistoryPhase('loading')
+              setDetailHistoryError(null)
+            }
             try {
               const data = await callApi<{ executions: ClientExecutionRecord[] }>(
                 { op: 'execution-status', todoId },
@@ -3150,10 +3154,19 @@ window.__ModuleLoader__.load({
           }
 
           function closeExecution(): void {
+            // Keep the execution panel mounted while a non-idempotent dispatch
+            // or recovery action is still in flight. Its result must be visible
+            // before the user returns to the workbench.
+            if (dispatchBusy || dispatchLockRef.current) return
+            const todoId = executionTarget?.id
             setExecutionTarget(null)
             setExecutionContext(null)
             setExecutionError(null)
             setExecutionNotice(null)
+            if (todoId !== undefined) {
+              void loadDetailHistory(todoId)
+              void loadExecutionOverview()
+            }
           }
 
           function onExecutionWorkspaceChange(workspaceId: string): void {
@@ -3864,6 +3877,7 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     style: STYLES.secondaryButton,
                     onClick: closeExecution,
+                    disabled: dispatchBusy,
                   }, t('execution.back')),
                   h('button', {
                     type: 'button',
