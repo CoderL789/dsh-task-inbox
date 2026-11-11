@@ -279,7 +279,7 @@
 
 **自动化验证（2026-11-11）**：
 
-- GitHub Actions 最新验证提交：`5044ec501dfb3cbb0a3e42d9726c0487fad228a7`；
+- GitHub Actions 最新验证提交：`4fc416482da75f2db6ec6a759f83b2b6f958740b`；
 - `pnpm build`、`pnpm typecheck`、`pnpm check` 全部通过；
 - `pnpm test`：**175/175 通过，0 失败**；
 - 验证只运行构建与测试，没有调用真实 Workspace / Session，也没有创建、Fork 或发送 Prompt。
