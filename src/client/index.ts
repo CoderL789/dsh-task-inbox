@@ -4442,7 +4442,7 @@ window.__ModuleLoader__.load({
                           ),
                       canRecover
                         ? h('div', { className: 'dti-history-footer' },
-                            h('button', { type: 'button', className: 'dti-small-button', onClick: () => openExecution(todo, record.executionId) },
+                            h('button', { type: 'button', className: 'dti-small-button', onClick: () => { if (todo !== undefined) openExecution(todo, record.executionId) } },
                               t('workbench.detail.openExecution')),
                           )
                         : null,
