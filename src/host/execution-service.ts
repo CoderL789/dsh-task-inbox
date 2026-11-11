@@ -25,7 +25,9 @@ import {
 } from './store.js'
 import type { ExecutionStore } from './execution-store.js'
 import type {
+  ExecutionEvent,
   ExecutionRecord,
+  ExecutionOverviewRecord,
   ExecutionStatus,
   ExecutionStrategy,
 } from './execution-model.js'
@@ -189,6 +191,67 @@ function sameIntentParameters(
 function classifyTargetStrategy(strategy: ExecutionStrategy): void {
   if (strategy !== 'new' && strategy !== 'reuse' && strategy !== 'fork') {
     throw new ExecutionServiceError('invalid_payload', 'Unknown execution strategy.')
+  }
+}
+
+type ExecutionEventDraft = Omit<ExecutionEvent, 'eventId'>
+
+function appendExecutionEvent(
+  record: ExecutionRecord,
+  draft: ExecutionEventDraft,
+): ExecutionRecord {
+  const events = record.events ?? []
+  return {
+    ...record,
+    events: [...events, { eventId: `${record.executionId}:${events.length + 1}`, ...draft }],
+  }
+}
+
+function transitionEvent(
+  current: ExecutionRecord,
+  next: ExecutionRecord,
+  at: string,
+): ExecutionEventDraft | undefined {
+  const statusChanged = current.status !== next.status
+  const targetChanged = current.targetSessionId !== next.targetSessionId && next.targetSessionId !== undefined
+  if (!statusChanged && !targetChanged) return undefined
+
+  let kind: ExecutionEvent['kind']
+  if (next.errorCode === 'user_abandoned' || next.errorCode === 'user_abandoned_session_kept') {
+    kind = 'abandoned'
+  } else if (targetChanged) {
+    kind = 'session_bound'
+  } else if (current.status === 'unknown' && (next.status === 'accepted' || next.status === 'session_ready')) {
+    kind = 'recovered'
+  } else if (next.status === 'accepted') {
+    kind = 'prompt_accepted'
+  } else if (next.status === 'failed') {
+    kind = 'prompt_failed'
+  } else if (next.status === 'unknown') {
+    kind = 'outcome_unknown'
+  } else if (next.status === 'dispatching') {
+    kind = current.status === 'prepared'
+      ? 'dispatch_started'
+      : current.status === 'unknown'
+        ? 'prompt_retry_started'
+        : 'prompt_dispatch_started'
+  } else if (next.status === 'session_ready') {
+    kind = 'session_ready'
+  } else {
+    kind = 'status_changed'
+  }
+
+  return {
+    kind,
+    at,
+    ...(statusChanged ? { fromStatus: current.status, toStatus: next.status } : {}),
+    ...(targetChanged
+      ? {
+          sessionId: next.targetSessionId,
+          bindingSource: next.bindingSource ?? 'client',
+        }
+      : {}),
+    ...(next.errorCode === undefined ? {} : { errorCode: next.errorCode }),
   }
 }
 
@@ -364,8 +427,9 @@ export class ExecutionService {
     }
 
     const now = this.options.clock.isoNow()
+    const executionId = this.options.ids.executionId()
     const record: ExecutionRecord = {
-      executionId: this.options.ids.executionId(),
+      executionId,
       clientRequestId,
       requestId: this.options.ids.requestId(),
       todoId,
@@ -379,6 +443,7 @@ export class ExecutionService {
       createdAt: now,
       updatedAt: now,
       createdAtMs: this.options.clock.epochMs(),
+      events: [{ eventId: `${executionId}:1`, kind: 'intent_created', at: now, toStatus: 'prepared' }],
     }
 
     return this.durable(() => this.options.store.mutate((current) => {
@@ -592,12 +657,17 @@ export class ExecutionService {
       const nowMs = this.options.clock.epochMs()
       const now = this.options.clock.isoNow()
       const token = this.options.ids.leaseToken?.() ?? this.options.ids.executionId()
-      const acquired: ExecutionRecord = {
+      const acquired = appendExecutionEvent({
         ...record, status: 'dispatching', dispatchLeaseToken: token,
         dispatchLeaseAcquiredAt: now,
         dispatchLeaseExpiresAt: new Date(nowMs + DISPATCH_INTERRUPT_GRACE_MS).toISOString(),
         updatedAt: now,
-      }
+      }, {
+        kind: 'dispatch_started',
+        at: now,
+        fromStatus: 'prepared',
+        toStatus: 'dispatching',
+      })
       const next = current.slice()
       next[index] = acquired
       return { next, result: { execution: acquired, acquired: true } }
@@ -655,11 +725,17 @@ export class ExecutionService {
       if (currentRecord.status !== 'unknown' || currentRecord.targetSessionId === undefined) {
         return { next: current, result: { execution: currentRecord, authorized: false } }
       }
-      const authorized: ExecutionRecord = {
+      const now = this.options.clock.isoNow()
+      const authorized = appendExecutionEvent({
         ...currentRecord,
         status: 'dispatching',
-        updatedAt: this.options.clock.isoNow(),
-      }
+        updatedAt: now,
+      }, {
+        kind: 'prompt_retry_started',
+        at: now,
+        fromStatus: 'unknown',
+        toStatus: 'dispatching',
+      })
       const next = current.slice()
       next[index] = authorized
       return { next, result: { execution: authorized, authorized: true } }
@@ -836,6 +912,27 @@ export class ExecutionService {
       .sort((left, right) => right.createdAtMs - left.createdAtMs)
   }
 
+  /** Lightweight cross-Todo read model for the workbench overview; excludes prompt text and timeline payloads. */
+  listOverview(): ExecutionOverviewRecord[] {
+    return this.options.store.read()
+      .map((record) => ({
+        executionId: record.executionId,
+        todoId: record.todoId,
+        strategy: record.strategy,
+        workspaceId: record.workspaceId,
+        workspacePath: record.workspacePath,
+        ...(record.sourceSessionId === undefined ? {} : { sourceSessionId: record.sourceSessionId }),
+        ...(record.targetSessionId === undefined ? {} : { targetSessionId: record.targetSessionId }),
+        ...(record.bindingSource === undefined ? {} : { bindingSource: record.bindingSource }),
+        status: record.status,
+        ...(record.errorCode === undefined ? {} : { errorCode: record.errorCode }),
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        createdAtMs: record.createdAtMs,
+      }))
+      .sort((left, right) => right.createdAtMs - left.createdAtMs)
+  }
+
   /** Sessions created after an unknown create/fork result, for manual binding. */
   async candidates(executionId: string): Promise<UnknownCandidate[]> {
     const record = this.requireRecord(executionId)
@@ -970,8 +1067,15 @@ export class ExecutionService {
     return this.durable(() => this.options.store.mutate((current) => {
       const index = current.findIndex((entry) => entry.executionId === executionId)
       if (index === -1) throw new ExecutionServiceError('execution_not_found', 'Execution was not found.')
-      const decided = decide(current[index], current)
-      const updated = { ...decided, updatedAt: this.options.clock.isoNow() }
+      const previous = current[index]
+      const decided = decide(previous, current)
+      const now = this.options.clock.isoNow()
+      const event = transitionEvent(previous, decided, now)
+      const updated = {
+        ...decided,
+        ...(event === undefined ? {} : { events: appendExecutionEvent(previous, event).events }),
+        updatedAt: now,
+      }
       const next = current.slice()
       next[index] = updated
       return { next, result: updated }
