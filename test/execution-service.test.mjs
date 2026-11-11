@@ -240,6 +240,36 @@ test('execution overview is sorted, read-only, and excludes prompt and coordinat
   assert.equal('events' in overview[0], false)
 })
 
+test('execution overview adds available live Session titles and tolerates title lookup failures', async () => {
+  const { service } = makeHarness({
+    sessions: { get: (id) => ({ id }) },
+    sessionTitle: {
+      get: (session) => ({ title: session.id === 'session-src' ? 'Planning session' : '   ' }),
+    },
+  })
+  const created = await service.createIntent(newIntent({
+    strategy: 'reuse',
+    sourceSessionId: 'session-src',
+  }))
+  await service.markSessionReady(created.executionId, 'session-src')
+
+  const overview = service.listOverview()[0]
+  assert.equal(overview.sourceSessionTitle, 'Planning session')
+  assert.equal(overview.targetSessionTitle, 'Planning session')
+
+  const failing = makeHarness({
+    sessions: { get: () => ({}) },
+    sessionTitle: { get: () => { throw new Error('title service unavailable') } },
+  })
+  const record = await failing.service.createIntent(newIntent({
+    strategy: 'reuse',
+    sourceSessionId: 'session-src',
+  }))
+  const fallback = failing.service.listOverview()[0]
+  assert.equal(fallback.executionId, record.executionId)
+  assert.equal('sourceSessionTitle' in fallback, false)
+})
+
 test('createIntent is idempotent by clientRequestId and rejects changed parameters', async () => {
   const { service, store } = makeHarness()
   const first = await service.createIntent(newIntent())
