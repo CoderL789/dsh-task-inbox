@@ -149,6 +149,33 @@ type DispatchStatus =
   | 'failed'
   | 'unknown'
 
+interface ClientExecutionEvent {
+  eventId: string
+  kind: string
+  at: string
+  fromStatus?: DispatchStatus
+  toStatus?: DispatchStatus
+  sessionId?: string
+  bindingSource?: 'client' | 'manual'
+  errorCode?: string
+}
+
+interface ClientExecutionOverviewRecord {
+  executionId: string
+  todoId: string
+  strategy: ExecutionStrategy
+  workspaceId: string
+  workspacePath: string
+  sourceSessionId?: string
+  targetSessionId?: string
+  bindingSource?: 'client' | 'manual'
+  status: DispatchStatus
+  errorCode?: string
+  createdAt: string
+  updatedAt: string
+  createdAtMs: number
+}
+
 interface ClientExecutionRecord {
   executionId: string
   clientRequestId: string
@@ -166,6 +193,7 @@ interface ClientExecutionRecord {
   errorCode?: string
   createdAt: string
   updatedAt: string
+  events?: ClientExecutionEvent[]
 }
 
 interface ClientPromptResult {
@@ -433,6 +461,68 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.error.sessionRequired': 'Select a source session.',
     'execution.error.sessionUnsuitable': 'The selected session is not suitable for this strategy.',
     'execution.titleUnknown': 'Untitled session',
+    'workbench.stats.total': 'All tasks',
+    'workbench.stats.undispatched': 'Not dispatched',
+    'workbench.stats.unresolved': 'Needs attention',
+    'workbench.stats.accepted': 'Dispatched',
+    'workbench.search.placeholder': 'Search tasks…',
+    'workbench.filter.status': 'Status',
+    'workbench.filter.all': 'All statuses',
+    'workbench.filter.undispatched': 'Not dispatched',
+    'workbench.filter.unresolved': 'Needs attention',
+    'workbench.filter.accepted': 'Dispatched',
+    'workbench.filter.workspace': 'Workspace',
+    'workbench.filter.allWorkspaces': 'All workspaces',
+    'workbench.filter.unassigned': 'Unassigned',
+    'workbench.filter.strategy': 'Strategy',
+    'workbench.filter.allStrategies': 'All strategies',
+    'workbench.sort.label': 'Sort',
+    'workbench.sort.manual': 'Manual order',
+    'workbench.sort.recent': 'Recently updated',
+    'workbench.sort.created': 'Recently created',
+    'workbench.list.title': 'Tasks',
+    'workbench.list.count': '{visible} of {total} tasks',
+    'workbench.list.noResults': 'No tasks match these filters.',
+    'workbench.list.clearFilters': 'Clear filters',
+    'workbench.list.selectHint': 'Select a task to inspect its details.',
+    'workbench.detail.title': 'Task details',
+    'workbench.detail.selectHint': 'Select a task to see its details and execution history.',
+    'workbench.detail.execute': 'Configure execution',
+    'workbench.detail.edit': 'Edit',
+    'workbench.detail.delete': 'Delete',
+    'workbench.detail.latestExecution': 'Latest execution',
+    'workbench.detail.noExecution': 'This task has not been dispatched yet.',
+    'workbench.detail.history': 'Execution history',
+    'workbench.detail.historyLoading': 'Loading execution history…',
+    'workbench.detail.historyError': 'Execution history could not be loaded.',
+    'workbench.detail.retry': 'Retry',
+    'workbench.detail.noEvents': 'No event details were recorded for this legacy execution.',
+    'workbench.detail.openExecution': 'Open recovery controls',
+    'workbench.detail.createdAt': 'Created',
+    'workbench.detail.updatedAt': 'Updated',
+    'workbench.detail.workspace': 'Workspace',
+    'workbench.detail.strategy': 'Strategy',
+    'workbench.detail.session': 'Session',
+    'workbench.detail.status': 'Status',
+    'workbench.detail.unassigned': 'Unassigned workspace',
+    'workbench.event.intent_created': 'Execution intent created',
+    'workbench.event.dispatch_started': 'Dispatch lease acquired',
+    'workbench.event.prompt_dispatch_started': 'Prompt dispatch started',
+    'workbench.event.prompt_retry_started': 'Authorized Prompt retry started',
+    'workbench.event.session_ready': 'Session is ready',
+    'workbench.event.session_bound': 'Target Session associated',
+    'workbench.event.prompt_accepted': 'Prompt acceptance verified',
+    'workbench.event.prompt_failed': 'Prompt dispatch failed',
+    'workbench.event.outcome_unknown': 'Outcome could not be confirmed',
+    'workbench.event.recovered': 'Execution recovered by Host verification',
+    'workbench.event.abandoned': 'Execution abandoned; created Session kept',
+    'workbench.event.status_changed': 'Execution status changed',
+    'workbench.status.prepared': 'Prepared',
+    'workbench.status.session_ready': 'Session ready',
+    'workbench.status.dispatching': 'Dispatching',
+    'workbench.status.accepted': 'Accepted',
+    'workbench.status.failed': 'Failed',
+    'workbench.status.unknown': 'Unknown',
     'error.execution_unavailable': 'Execution configuration is not available.',
     'banner.dismiss': 'Dismiss',
     'error.network': 'Cannot reach the Task Inbox service.',
@@ -630,6 +720,68 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'execution.error.sessionRequired': '请选择来源会话。',
     'execution.error.sessionUnsuitable': '所选会话不适合该策略。',
     'execution.titleUnknown': '未命名会话',
+    'workbench.stats.total': '全部待办',
+    'workbench.stats.undispatched': '未派发',
+    'workbench.stats.unresolved': '待处理',
+    'workbench.stats.accepted': '已派发',
+    'workbench.search.placeholder': '搜索待办…',
+    'workbench.filter.status': '状态',
+    'workbench.filter.all': '全部状态',
+    'workbench.filter.undispatched': '未派发',
+    'workbench.filter.unresolved': '待处理',
+    'workbench.filter.accepted': '已派发',
+    'workbench.filter.workspace': '工作区',
+    'workbench.filter.allWorkspaces': '全部工作区',
+    'workbench.filter.unassigned': '未分配',
+    'workbench.filter.strategy': '策略',
+    'workbench.filter.allStrategies': '全部策略',
+    'workbench.sort.label': '排序',
+    'workbench.sort.manual': '手动顺序',
+    'workbench.sort.recent': '最近更新',
+    'workbench.sort.created': '最近创建',
+    'workbench.list.title': '待办',
+    'workbench.list.count': '{visible} / {total} 条待办',
+    'workbench.list.noResults': '没有符合当前筛选条件的待办。',
+    'workbench.list.clearFilters': '清除筛选',
+    'workbench.list.selectHint': '选择一条待办查看详情。',
+    'workbench.detail.title': '待办详情',
+    'workbench.detail.selectHint': '选择一条待办，查看完整内容和执行历史。',
+    'workbench.detail.execute': '配置执行',
+    'workbench.detail.edit': '编辑',
+    'workbench.detail.delete': '删除',
+    'workbench.detail.latestExecution': '最近一次执行',
+    'workbench.detail.noExecution': '这条待办还没有派发过。',
+    'workbench.detail.history': '执行历史',
+    'workbench.detail.historyLoading': '正在加载执行历史…',
+    'workbench.detail.historyError': '执行历史加载失败。',
+    'workbench.detail.retry': '重试',
+    'workbench.detail.noEvents': '这条旧执行记录没有保存事件明细。',
+    'workbench.detail.openExecution': '打开恢复操作',
+    'workbench.detail.createdAt': '创建时间',
+    'workbench.detail.updatedAt': '更新时间',
+    'workbench.detail.workspace': '工作区',
+    'workbench.detail.strategy': '策略',
+    'workbench.detail.session': '会话',
+    'workbench.detail.status': '状态',
+    'workbench.detail.unassigned': '未分配工作区',
+    'workbench.event.intent_created': '创建执行意图',
+    'workbench.event.dispatch_started': '取得派发执行权',
+    'workbench.event.prompt_dispatch_started': '开始派发 Prompt',
+    'workbench.event.prompt_retry_started': '开始已授权的 Prompt 重试',
+    'workbench.event.session_ready': '会话已就绪',
+    'workbench.event.session_bound': '已关联目标会话',
+    'workbench.event.prompt_accepted': '已核验 Prompt 接受结果',
+    'workbench.event.prompt_failed': 'Prompt 派发失败',
+    'workbench.event.outcome_unknown': '暂时无法确认执行结果',
+    'workbench.event.recovered': 'Host 核验后恢复执行状态',
+    'workbench.event.abandoned': '执行已放弃；已创建会话保留',
+    'workbench.event.status_changed': '执行状态变更',
+    'workbench.status.prepared': '已准备',
+    'workbench.status.session_ready': '会话已就绪',
+    'workbench.status.dispatching': '派发中',
+    'workbench.status.accepted': '已接受',
+    'workbench.status.failed': '失败',
+    'workbench.status.unknown': '待核验',
     'error.execution_unavailable': '执行配置暂不可用。',
     'banner.dismiss': '关闭',
     'error.network': '无法连接待办箱服务。',
@@ -1922,6 +2074,19 @@ window.__ModuleLoader__.load({
           )
 
           const [todos, setTodos] = React.useState<Todo[]>([])
+          const [executionOverview, setExecutionOverview] = React.useState<ClientExecutionOverviewRecord[]>([])
+          const [overviewPhase, setOverviewPhase] = React.useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+          const [overviewError, setOverviewError] = React.useState<string | null>(null)
+          const [selectedTodoId, setSelectedTodoId] = React.useState<string | null>(null)
+          const [searchQuery, setSearchQuery] = React.useState('')
+          const [statusFilter, setStatusFilter] = React.useState<'all' | 'undispatched' | 'unresolved' | 'accepted'>('all')
+          const [workspaceFilter, setWorkspaceFilter] = React.useState('')
+          const [strategyFilter, setStrategyFilter] = React.useState<'all' | ExecutionStrategy>('all')
+          const [sortMode, setSortMode] = React.useState<'manual' | 'recent' | 'created'>('manual')
+          const [detailExecutions, setDetailExecutions] = React.useState<ClientExecutionRecord[]>([])
+          const [detailHistoryPhase, setDetailHistoryPhase] = React.useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+          const [detailHistoryError, setDetailHistoryError] = React.useState<string | null>(null)
+          const [expandedExecutionId, setExpandedExecutionId] = React.useState<string | null>(null)
           const [loading, setLoading] = React.useState(true)
           const [loadError, setLoadError] = React.useState<string | null>(null)
           const [banner, setBanner] = React.useState<Banner | null>(null)
@@ -1992,8 +2157,38 @@ window.__ModuleLoader__.load({
           React.useEffect(() => {
             const controller = new AbortController()
             void load(controller.signal)
+            void loadExecutionOverview(controller.signal)
             return () => controller.abort()
           }, [])
+
+          React.useEffect(() => {
+            if (todos.length === 0) {
+              if (selectedTodoId !== null) setSelectedTodoId(null)
+              return
+            }
+            if (selectedTodoId === null || !todos.some((todo) => todo.id === selectedTodoId)) {
+              setSelectedTodoId(todos[0].id)
+            }
+          }, [todos, selectedTodoId])
+
+          React.useEffect(() => {
+            if (selectedTodoId === null) {
+              setDetailExecutions([])
+              setDetailHistoryPhase('idle')
+              setDetailHistoryError(null)
+              return
+            }
+            const controller = new AbortController()
+            setDetailHistoryPhase('loading')
+            setDetailHistoryError(null)
+            void loadDetailHistory(selectedTodoId, controller.signal)
+            return () => controller.abort()
+          }, [selectedTodoId])
+
+          React.useEffect(() => {
+            if (executionTarget === null || historyPhase !== 'loaded') return
+            void loadExecutionOverview()
+          }, [executionHistory, executionTarget, historyPhase])
 
           React.useEffect(() => {
             if (editorMode !== null) titleInputRef.current?.focus()
@@ -2016,6 +2211,49 @@ window.__ModuleLoader__.load({
             } finally {
               if (signal === undefined || !signal.aborted) setLoading(false)
             }
+          }
+
+          async function loadExecutionOverview(signal?: AbortSignal): Promise<void> {
+            setOverviewPhase('loading')
+            setOverviewError(null)
+            try {
+              const data = await callApi<{ executions: ClientExecutionOverviewRecord[] }>(
+                { op: 'execution-overview' },
+                signal,
+              )
+              setExecutionOverview(Array.isArray(data.executions) ? data.executions : [])
+              setOverviewPhase('loaded')
+            } catch (error) {
+              if (!isAbort(error)) {
+                setOverviewError(messageForCode(t, errorCode(error)))
+                setOverviewPhase('error')
+              }
+            }
+          }
+
+          async function loadDetailHistory(todoId: string, signal?: AbortSignal): Promise<void> {
+            try {
+              const data = await callApi<{ executions: ClientExecutionRecord[] }>(
+                { op: 'execution-status', todoId },
+                signal,
+              )
+              if (signal !== undefined && signal.aborted) return
+              setDetailExecutions(Array.isArray(data.executions) ? data.executions : [])
+              setDetailHistoryPhase('loaded')
+            } catch (error) {
+              if (!isAbort(error)) {
+                setDetailHistoryError(messageForCode(t, errorCode(error)))
+                setDetailHistoryPhase('error')
+              }
+            }
+          }
+
+          function clearWorkbenchFilters(): void {
+            setSearchQuery('')
+            setStatusFilter('all')
+            setWorkspaceFilter('')
+            setStrategyFilter('all')
+            setSortMode('manual')
           }
 
           function openCreate(): void {
@@ -2143,7 +2381,8 @@ window.__ModuleLoader__.load({
             }
           }
 
-          function openExecution(todo: Todo): void {
+          function openExecution(todo: Todo, preferredExecutionId?: string): void {
+            setSelectedTodoId(todo.id)
             setExecutionTarget(todo)
             setExecutionContext(null)
             setExecutionError(null)
@@ -2171,7 +2410,7 @@ window.__ModuleLoader__.load({
             setAbandonConfirm(false)
             setReuseRecoveryConfirm(false)
             void loadExecutionContext()
-            void loadExecutionHistory(todo.id)
+            void loadExecutionHistory(todo.id, preferredExecutionId)
           }
 
           async function loadExecutionHistory(
