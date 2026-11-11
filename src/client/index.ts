@@ -4095,18 +4095,16 @@ window.__ModuleLoader__.load({
               if (query !== '' && !todo.title.toLocaleLowerCase().includes(query) &&
                 !todo.description.toLocaleLowerCase().includes(query)) return false
 
-              if (!overviewReady && (statusFilter !== 'all' || workspaceFilter !== '' || strategyFilter !== 'all')) {
-                return false
+              if (overviewReady) {
+                const records = executionOverview.filter((record) => record.todoId === todo.id)
+                const latest = latestExecutionForTodo(todo.id)
+                if (statusFilter === 'undispatched' && records.length !== 0) return false
+                if (statusFilter === 'unresolved' && !records.some((record) => UNRESOLVED_EXECUTION_STATUSES.includes(record.status))) return false
+                if (statusFilter === 'accepted' && latest?.status !== 'accepted') return false
+                if (workspaceFilter === '__unassigned__' && latest !== undefined) return false
+                if (workspaceFilter !== '' && workspaceFilter !== '__unassigned__' && latest?.workspaceId !== workspaceFilter) return false
+                if (strategyFilter !== 'all' && latest?.strategy !== strategyFilter) return false
               }
-
-              const records = executionOverview.filter((record) => record.todoId === todo.id)
-              const latest = latestExecutionForTodo(todo.id)
-              if (statusFilter === 'undispatched' && records.length !== 0) return false
-              if (statusFilter === 'unresolved' && !records.some((record) => UNRESOLVED_EXECUTION_STATUSES.includes(record.status))) return false
-              if (statusFilter === 'accepted' && latest?.status !== 'accepted') return false
-              if (workspaceFilter === '__unassigned__' && latest !== undefined) return false
-              if (workspaceFilter !== '' && workspaceFilter !== '__unassigned__' && latest?.workspaceId !== workspaceFilter) return false
-              if (strategyFilter !== 'all' && latest?.strategy !== strategyFilter) return false
               return true
             })
 
@@ -4540,14 +4538,14 @@ window.__ModuleLoader__.load({
               ),
               h('div', { className: 'dti-detail-section' },
                 h('h3', { className: 'dti-detail-section-title' }, t('workbench.detail.latestExecution')),
-                latest === undefined
+                overviewPhase !== 'loaded'
                   ? h('p', { className: 'dti-detail-description' },
                       overviewPhase === 'error'
                         ? (overviewError ?? t('error.unknown'))
-                        : overviewPhase === 'loaded'
-                          ? t('workbench.detail.noExecution')
-                          : t('workbench.detail.overviewLoading'))
-                  : h('div', { className: 'dti-detail-meta' },
+                        : t('workbench.detail.overviewLoading'))
+                  : latest === undefined
+                    ? h('p', { className: 'dti-detail-description' }, t('workbench.detail.noExecution'))
+                    : h('div', { className: 'dti-detail-meta' },
                       detailMeta(t('workbench.detail.workspace'), workspaceLabel(latest)),
                       detailMeta(t('workbench.detail.strategy'), strategyLabel(t, latest.strategy)),
                       ...(latest.sourceSessionId !== undefined && latest.sourceSessionId === latest.targetSessionId
