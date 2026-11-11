@@ -1295,6 +1295,14 @@ const WORKBENCH_CSS = `
 @media (max-width:720px){.dti-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar .dti-search{grid-column:1/-1}.dti-task-row{grid-template-columns:minmax(0,1fr);align-items:start}.dti-task-actions{justify-content:flex-end}}
 @media (max-width:440px){.dti-toolbar{grid-template-columns:minmax(0,1fr)}.dti-toolbar .dti-search{grid-column:auto}.dti-detail-meta{grid-template-columns:1fr;gap:3px}.dti-detail-value{margin-bottom:6px}}
 @media (prefers-reduced-motion:reduce){.dti-workbench *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+.dti-execution-workspace{max-width:1440px;margin:0 auto}
+.dti-exec-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(280px,.9fr);gap:16px;align-items:start;min-width:0}
+.dti-exec-config,.dti-exec-summary{min-width:0;padding:16px;border-radius:10px;background:var(--dsw-alias-bg-layer-2)}
+.dti-exec-summary{position:sticky;top:10px}
+.dti-exec-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px}
+@media (max-width:900px){.dti-exec-layout{grid-template-columns:minmax(0,1fr)}.dti-exec-summary{position:static}.dti-exec-actions{grid-column:auto}}
+@media (max-width:440px){.dti-exec-actions{flex-direction:column-reverse}.dti-exec-actions button{width:100%}}
+
 `
 
 function errorCode(error: unknown): string {
@@ -3688,28 +3696,17 @@ window.__ModuleLoader__.load({
                 return h(
                   'div',
                   null,
-                  h(
-                    'p',
-                    { role: 'alert', style: STYLES.errorText },
-                    messageForCode(t, executionError),
-                  ),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: { ...STYLES.secondaryButton, marginTop: '12px' },
-                      onClick: () => void loadExecutionContext(),
-                    },
-                    t('execution.retry'),
-                  ),
+                  h('p', { role: 'alert', style: STYLES.errorText }, messageForCode(t, executionError)),
+                  h('button', {
+                    type: 'button',
+                    style: { ...STYLES.secondaryButton, marginTop: '12px' },
+                    onClick: () => void loadExecutionContext(),
+                  }, t('execution.retry')),
                 )
               }
               if (context === null || !context.available) {
-                return h(
-                  'p',
-                  { role: 'alert', style: STYLES.errorText },
-                  context?.reason ?? t('error.execution_unavailable'),
-                )
+                return h('p', { role: 'alert', style: STYLES.errorText },
+                  context?.reason ?? t('error.execution_unavailable'))
               }
 
               const strategies: ExecutionStrategy[] = ['new', 'reuse', 'fork']
@@ -3722,183 +3719,162 @@ window.__ModuleLoader__.load({
 
               return h(
                 'div',
-                null,
-                h(
-                  'label',
-                  { htmlFor: 'task-inbox-exec-workspace', style: STYLES.sectionLabel },
-                  t('execution.workspace.label'),
-                ),
-                h(
-                  'select',
-                  {
-                    id: 'task-inbox-exec-workspace',
-                    value: executionWorkspaceId,
-                    style: STYLES.input,
-                    onChange: (event: { target: { value: string } }) =>
-                      onExecutionWorkspaceChange(event.target.value),
-                  },
-                  h('option', { value: '' }, t('execution.workspace.placeholder')),
-                  ...context.workspaces.map((entry) =>
-                    h(
-                      'option',
-                      { key: entry.id, value: entry.id, disabled: !entry.available },
-                      `${entry.title} — ${entry.path}${
-                        entry.available ? '' : ` (${t('execution.workspace.unavailable')})`
-                      }`,
-                    ),
-                  ),
-                ),
-                context.workspaces.length === 0
-                  ? h('p', { style: STYLES.hintText }, t('execution.workspace.empty'))
-                  : null,
-                workspace !== undefined && !workspace.available
-                  ? h('p', { style: STYLES.errorText }, t('execution.error.workspaceUnavailable'))
-                  : null,
-
-                h('div', { style: { ...STYLES.sectionLabel, marginTop: '16px' } }, t('execution.strategy.label')),
+                { className: 'dti-exec-layout' },
                 h(
                   'div',
-                  { style: STYLES.strategyGroup },
-                  ...strategies.map((strategy) =>
-                    h(
-                      'button',
-                      {
-                        key: strategy,
-                        type: 'button',
-                        style:
-                          executionStrategy === strategy
-                            ? STYLES.strategyButtonActive
-                            : STYLES.strategyButton,
-                        'aria-pressed': executionStrategy === strategy,
-                        onClick: () => onExecutionStrategyChange(strategy),
-                      },
-                      strategyLabel(t, strategy),
+                  { className: 'dti-exec-config' },
+                  h('label', {
+                    htmlFor: 'task-inbox-exec-workspace',
+                    style: STYLES.sectionLabel,
+                  }, t('execution.workspace.label')),
+                  h(
+                    'select',
+                    {
+                      id: 'task-inbox-exec-workspace',
+                      value: executionWorkspaceId,
+                      style: STYLES.input,
+                      onChange: (event: { target: { value: string } }) =>
+                        onExecutionWorkspaceChange(event.target.value),
+                    },
+                    h('option', { value: '' }, t('execution.workspace.placeholder')),
+                    ...context.workspaces.map((entry) =>
+                      h('option', {
+                        key: entry.id,
+                        value: entry.id,
+                        disabled: !entry.available,
+                      }, entry.title + ' — ' + entry.path + (
+                        entry.available ? '' : ' (' + t('execution.workspace.unavailable') + ')'
+                      )),
                     ),
                   ),
-                ),
-                h('p', { style: STYLES.hintText }, strategyHint),
-
-                executionStrategy === 'new'
-                  ? null
-                  : h(
-                      'div',
-                      null,
+                  context.workspaces.length === 0
+                    ? h('p', { style: STYLES.hintText }, t('execution.workspace.empty'))
+                    : null,
+                  workspace !== undefined && !workspace.available
+                    ? h('p', { style: STYLES.errorText }, t('execution.error.workspaceUnavailable'))
+                    : null,
+                  h('div', {
+                    style: { ...STYLES.sectionLabel, marginTop: '18px' },
+                  }, t('execution.strategy.label')),
+                  h(
+                    'div',
+                    { style: STYLES.strategyGroup },
+                    ...strategies.map((strategy) =>
                       h(
-                        'label',
-                        { htmlFor: 'task-inbox-exec-session', style: STYLES.sectionLabel },
-                        t('execution.session.label'),
-                      ),
-                      h(
-                        'select',
+                        'button',
                         {
-                          id: 'task-inbox-exec-session',
-                          value: executionSessionId,
-                          style: STYLES.input,
-                          onChange: (event: { target: { value: string } }) =>
-                            onExecutionSessionChange(event.target.value),
+                          key: strategy,
+                          type: 'button',
+                          style: executionStrategy === strategy
+                            ? STYLES.strategyButtonActive
+                            : STYLES.strategyButton,
+                          'aria-pressed': executionStrategy === strategy,
+                          onClick: () => onExecutionStrategyChange(strategy),
                         },
-                        h('option', { value: '' }, t('execution.session.placeholder')),
-                        ...sessionsInWorkspace.map((session) =>
-                          h(
-                            'option',
-                            {
+                        strategyLabel(t, strategy),
+                      ),
+                    ),
+                  ),
+                  h('p', { style: STYLES.hintText }, strategyHint),
+                  executionStrategy === 'new'
+                    ? null
+                    : h(
+                        'div',
+                        null,
+                        h('label', {
+                          htmlFor: 'task-inbox-exec-session',
+                          style: STYLES.sectionLabel,
+                        }, t('execution.session.label')),
+                        h(
+                          'select',
+                          {
+                            id: 'task-inbox-exec-session',
+                            value: executionSessionId,
+                            style: STYLES.input,
+                            onChange: (event: { target: { value: string } }) =>
+                              onExecutionSessionChange(event.target.value),
+                          },
+                          h('option', { value: '' }, t('execution.session.placeholder')),
+                          ...sessionsInWorkspace.map((session) =>
+                            h('option', {
                               key: session.sessionId,
                               value: session.sessionId,
                               disabled: !isSessionSuitableForStrategy(session, executionStrategy),
-                            },
-                            sessionDisplayLabel(t, session, sessionIdLength),
+                            }, sessionDisplayLabel(t, session, sessionIdLength)),
                           ),
                         ),
+                        sessionsInWorkspace.length === 0
+                          ? h('p', { style: STYLES.hintText }, t('execution.session.empty'))
+                          : null,
+                        strategySessions.length === 0 && sessionsInWorkspace.length > 0
+                          ? h('p', { style: STYLES.hintText }, t('execution.session.noneSuitable'))
+                          : null,
+                        unsuitableCount > 0
+                          ? h('p', { style: STYLES.hintText },
+                              t('execution.session.unavailableCount').replace('{n}', String(unsuitableCount)))
+                          : null,
+                        unknownCount > 0
+                          ? h('p', { style: STYLES.hintText },
+                              t('execution.session.unknownCount').replace('{n}', String(unknownCount)))
+                          : null,
+                        h('p', { style: STYLES.hintText }, t('execution.session.unknownHint')),
+                        h('p', { style: STYLES.hintText }, t('execution.session.warningArchive')),
+                        executionStrategy === 'fork'
+                          ? h('p', { style: STYLES.hintText }, t('execution.session.warningFork'))
+                          : null,
                       ),
-                      sessionsInWorkspace.length === 0
-                        ? h('p', { style: STYLES.hintText }, t('execution.session.empty'))
-                        : null,
-                      strategySessions.length === 0 && sessionsInWorkspace.length > 0
-                        ? h('p', { style: STYLES.hintText }, t('execution.session.noneSuitable'))
-                        : null,
-                      unsuitableCount > 0
-                        ? h(
-                            'p',
-                            { style: STYLES.hintText },
-                            t('execution.session.unavailableCount').replace(
-                              '{n}',
-                              String(unsuitableCount),
-                            ),
-                          )
-                        : null,
-                      unknownCount > 0
-                        ? h(
-                            'p',
-                            { style: STYLES.hintText },
-                            t('execution.session.unknownCount').replace(
-                              '{n}',
-                              String(unknownCount),
-                            ),
-                          )
-                        : null,
-                      h('p', { style: STYLES.hintText }, t('execution.session.unknownHint')),
-                      h('p', { style: STYLES.hintText }, t('execution.session.warningArchive')),
-                      executionStrategy === 'fork'
-                        ? h('p', { style: STYLES.hintText }, t('execution.session.warningFork'))
-                        : null,
-                    ),
-
-                h(
-                  'div',
-                  { style: STYLES.summaryBox },
-                  h('div', { style: { fontWeight: 600 } }, t('execution.summary.title')),
-                  summaryRow(t('execution.summary.todo'), target.title),
-                  summaryRow(
-                    t('execution.summary.workspace'),
-                    workspace === undefined
-                      ? t('execution.summary.unset')
-                      : `${workspace.title} — ${workspace.path}`,
-                  ),
-                  summaryRow(t('execution.summary.strategy'), strategyLabel(t, executionStrategy)),
-                  summaryRow(
-                    t('execution.summary.session'),
-                    executionStrategy === 'new'
-                      ? t('execution.summary.newSession')
-                      : sourceSession === undefined
-                        ? t('execution.summary.unset')
-                        : sessionDisplayLabel(t, sourceSession, sessionIdLength),
-                  ),
                 ),
-
-                renderExecutionHistory(),
-                renderDispatchStatus(),
-                dispatchAvailable
-                  ? null
-                  : h('p', { style: STYLES.errorText }, t('execution.dispatch.previewOnly')),
-                executionNotice === null
-                  ? null
-                  : h('div', { role: 'status', style: STYLES.previewNotice }, executionNotice),
+                h(
+                  'aside',
+                  { className: 'dti-exec-summary' },
+                  h(
+                    'div',
+                    { style: STYLES.summaryBox },
+                    h('div', { style: { fontWeight: 500 } }, t('execution.summary.title')),
+                    summaryRow(t('execution.summary.todo'), target.title),
+                    summaryRow(
+                      t('execution.summary.workspace'),
+                      workspace === undefined
+                        ? t('execution.summary.unset')
+                        : workspace.title + ' — ' + workspace.path,
+                    ),
+                    summaryRow(t('execution.summary.strategy'), strategyLabel(t, executionStrategy)),
+                    summaryRow(
+                      t('execution.summary.session'),
+                      executionStrategy === 'new'
+                        ? t('execution.summary.newSession')
+                        : sourceSession === undefined
+                          ? t('execution.summary.unset')
+                          : sessionDisplayLabel(t, sourceSession, sessionIdLength),
+                    ),
+                  ),
+                  renderExecutionHistory(),
+                  renderDispatchStatus(),
+                  dispatchAvailable
+                    ? null
+                    : h('p', { style: STYLES.errorText }, t('execution.dispatch.previewOnly')),
+                  executionNotice === null
+                    ? null
+                    : h('div', { role: 'status', style: STYLES.previewNotice }, executionNotice),
+                ),
                 h(
                   'div',
-                  { style: STYLES.formActions },
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: STYLES.secondaryButton,
-                      onClick: closeExecution,
+                  { className: 'dti-exec-actions', style: STYLES.formActions },
+                  h('button', {
+                    type: 'button',
+                    style: STYLES.secondaryButton,
+                    onClick: closeExecution,
+                  }, t('execution.back')),
+                  h('button', {
+                    type: 'button',
+                    style: {
+                      ...STYLES.primaryButton,
+                      ...(confirmGate ? {} : { opacity: 0.55, cursor: 'default' }),
                     },
-                    t('execution.back'),
-                  ),
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      style: {
-                        ...STYLES.primaryButton,
-                        ...(confirmGate
-                          ? {}
-                          : { opacity: 0.55, cursor: 'default' }),
-                      },
-                      onClick: () => void startDispatch(),
-                      disabled: !confirmGate,
-                      'aria-busy': dispatchBusy,
-                    },
+                    onClick: () => void startDispatch(),
+                    disabled: !confirmGate,
+                    'aria-busy': dispatchBusy,
+                  },
                     dispatchBusy
                       ? t('execution.dispatch.busy')
                       : dispatchAvailable
@@ -3912,6 +3888,7 @@ window.__ModuleLoader__.load({
             return h(
               'div',
               {
+                className: 'dti-execution-workspace',
                 style: STYLES.executionPanel,
                 onKeyDown: (event: { key?: string }) => {
                   if (event.key === 'Escape') closeExecution()
