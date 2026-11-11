@@ -159,6 +159,8 @@ test('parseApiPayload validates execution operations', () => {
   assert.equal(parseApiPayload({ op: 'execution-prompt-retry', executionId: 'exec-1' }).ok, true)
   assert.equal(parseApiPayload({ op: 'execution-acquire' }).ok, false)
   assert.equal(parseApiPayload({ op: 'execution-prompt-retry' }).ok, false)
+  assert.equal(parseApiPayload({ op: 'execution-reuse-recover', executionId: 'exec-1' }).ok, true)
+  assert.equal(parseApiPayload({ op: 'execution-reuse-recover' }).ok, false)
 })
 
 test('execution operations are unavailable without the execution service', async () => {
@@ -230,6 +232,10 @@ test('execution operations map service results and service errors', async () => 
       calls.push(['authorizePromptRetry', id])
       return { execution: { executionId: id, status: 'dispatching' }, authorized: false }
     },
+    async recoverReuseExecution(id) {
+      calls.push(['recoverReuseExecution', id])
+      return { execution: { executionId: id, status: 'session_ready' }, recovered: true }
+    },
   }
 
   const intent = await handleOperation(
@@ -294,6 +300,14 @@ test('execution operations map service results and service errors', async () => 
     executionService,
   )
   assert.equal(authorized.body.data.authorized, false)
+
+  const recovered = await handleOperation(
+    service,
+    { op: 'execution-reuse-recover', executionId: 'exec-1' },
+    undefined,
+    executionService,
+  )
+  assert.equal(recovered.body.data.recovered, true)
 
   const failing = {
     async createIntent() {

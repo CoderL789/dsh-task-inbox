@@ -208,6 +208,9 @@ interface DispatchHostApi {
   authorizePromptRetry(
     executionId: string,
   ): Promise<{ execution: ClientExecutionRecord; authorized: boolean }>
+  recoverReuse(
+    executionId: string,
+  ): Promise<{ execution: ClientExecutionRecord; recovered: boolean }>
   sessionReady(executionId: string, sessionId: string): Promise<ClientExecutionRecord>
   dispatching(executionId: string): Promise<ClientExecutionRecord>
   result(
@@ -319,8 +322,13 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       'The Prompt was sent, but the Host has not confirmed the result. Check status later; do not re-create the Session.',
     'execution.dispatch.leaseNotAcquired':
       'Another client already owns this dispatch attempt; no Session was created here. Refresh and use recovery actions.',
-    'execution.dispatch.promptRetryNotAuthorized':
-      'The Host did not authorize a Prompt retry. Check status/candidates manually; do not create a new Session.',
+    'execution.dispatch.reuseBindingFailed':
+      'The reuse target association was not saved. The source Session is known; recover the binding without creating a Session.',
+    'execution.dispatch.recoverReuse': 'Recover reuse binding',
+    'execution.dispatch.recoveryVerificationUnavailable':
+      'The Session log could not be read to verify the Prompt; the execution stays unknown. Check manually before retrying.',
+    'error.reuse_recovery_unavailable': 'The reuse binding could not be recovered; check the source Session manually.',
+    'error.recovery_verification_unavailable': 'The Session log could not be read; manual verification is required.',
     'error.execution_unresolved': 'This Todo already has an unresolved execution. Recover or abandon it first.',
     'error.abandon_not_allowed': 'An accepted execution cannot be abandoned.',
     'error.target_session_before_intent': 'The target Session predates this execution intent.',
@@ -494,8 +502,13 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       'Prompt 已发送，但 Host 尚未确认结果。请稍后检查状态；不要重新创建会话。',
     'execution.dispatch.leaseNotAcquired':
       '另一个客户端已持有本次派发执行权，此处没有创建会话。请刷新并使用恢复操作。',
-    'execution.dispatch.promptRetryNotAuthorized':
-      'Host 未授权本次 Prompt 重试。请手动检查状态/候选会话；不要创建新会话。',
+    'execution.dispatch.reuseBindingFailed':
+      '复用目标关联保存失败。来源会话已知，可恢复绑定，不会创建新会话。',
+    'execution.dispatch.recoverReuse': '恢复复用绑定',
+    'execution.dispatch.recoveryVerificationUnavailable':
+      'Session 日志无法读取以核验 Prompt；执行保持 unknown，请人工检查后再决定。',
+    'error.reuse_recovery_unavailable': '复用绑定恢复失败；请人工检查来源会话。',
+    'error.recovery_verification_unavailable': 'Session 日志无法读取，需要人工核实。',
     'error.execution_unresolved': '该待办已有未解决的执行，请先恢复或放弃。',
     'error.abandon_not_allowed': '已接受的执行不能放弃。',
     'error.target_session_before_intent': '目标会话早于本次执行意图。',
@@ -1387,6 +1400,37 @@ async function resumeDispatchFlow(
   if (latest.status === 'failed') {
     return { status: 'failed', execution: latest, sessionId: latest.targetSessionId }
   }
+
+  // Reuse executions can recover by re-binding their original source Session
+  // without creating/forking anything. The Host re-checks the log first.
+  if (
+    latest.strategy === 'reuse' &&
+    latest.targetSessionId === undefined &&
+    (latest.status === 'prepared' || latest.status === 'dispatching' || latest.status === 'unknown')
+  ) {
+    let recovery: { execution: ClientExecutionRecord; recovered: boolean }
+    try {
+      recovery = await deps.host.recoverReuse(latest.executionId)
+    } catch (error) {
+      return { status: 'error', execution: latest, errorCode: dispatchErrorCode(error) }
+    }
+    if (!recovery.recovered) {
+      return {
+        status: recovery.execution.status,
+        execution: recovery.execution,
+        errorCode: recovery.execution.errorCode ?? 'reuse_recovery_unavailable',
+      }
+    }
+    if (recovery.execution.status === 'accepted') {
+      return {
+        status: 'accepted',
+        execution: recovery.execution,
+        sessionId: recovery.execution.targetSessionId,
+      }
+    }
+    return runPromptPhase(deps, recovery.execution)
+  }
+
   if (latest.status === 'prepared') return runSessionOperation(deps, latest)
   if (latest.status === 'unknown') {
     if (latest.targetSessionId === undefined) {
@@ -1821,6 +1865,16 @@ window.__ModuleLoader__.load({
                 })
                 return { execution: data.execution, authorized: data.authorized }
               },
+              recoverReuse: async (executionId) => {
+                const data = await callApi<{
+                  execution: ClientExecutionRecord
+                  recovered: boolean
+                }>({
+                  op: 'execution-reuse-recover',
+                  executionId,
+                })
+                return { execution: data.execution, recovered: data.recovered }
+              },
               sessionReady: async (executionId, sessionId) =>
                 (
                   await callApi<{ execution: ClientExecutionRecord }>({
@@ -1936,10 +1990,23 @@ window.__ModuleLoader__.load({
               if (outcome.execution !== undefined) setDispatchResult(outcome.execution)
               if (outcome.sessionId !== undefined) setDispatchSessionId(outcome.sessionId)
               if (outcome.status === 'error' && outcome.sessionId !== undefined) {
-                setDispatchError(
-                  t('execution.dispatch.persistFailed').replace('{id}', outcome.sessionId),
-                )
-                setDispatchMessage(null)
+                const reuse =
+                  (outcome.execution?.strategy ?? executionStrategy) === 'reuse'
+                const actualError =
+                  outcome.errorCode === undefined
+                    ? t('execution.dispatch.error')
+                    : messageForCode(t, outcome.errorCode)
+                if (reuse) {
+                  // Reuse never creates a Session: show the actual business
+                  // error and offer source-Session recovery instead.
+                  setDispatchMessage(t('execution.dispatch.reuseBindingFailed'))
+                  setDispatchError(actualError)
+                } else {
+                  setDispatchError(
+                    t('execution.dispatch.persistFailed').replace('{id}', outcome.sessionId),
+                  )
+                  setDispatchMessage(null)
+                }
               } else if (outcome.status === 'accepted') {
                 setDispatchMessage(t('execution.dispatch.accepted'))
               } else if (outcome.status === 'session_ready') {
@@ -2138,6 +2205,43 @@ window.__ModuleLoader__.load({
             setDispatchBusy(true)
             setDispatchError(null)
             try {
+              if (record.strategy === 'reuse') {
+                // Controlled source-Session recovery: no create/fork; the Host
+                // re-checks the log and binds the original source Session.
+                const recovery = await callApi<{
+                  execution: ClientExecutionRecord
+                  recovered: boolean
+                }>({
+                  op: 'execution-reuse-recover',
+                  executionId: record.executionId,
+                })
+                setDispatchResult(recovery.execution)
+                if (!recovery.recovered) {
+                  setDispatchError(
+                    messageForCode(t, recovery.execution.errorCode ?? 'reuse_recovery_unavailable'),
+                  )
+                  setDispatchMessage(t('execution.dispatch.reuseBindingFailed'))
+                  return
+                }
+                if (recovery.execution.status === 'accepted') {
+                  setDispatchMessage(t('execution.dispatch.accepted'))
+                  return
+                }
+                const outcome = await continueDispatch(
+                  { host: executionHostApi(), sessions },
+                  recovery.execution,
+                )
+                if (outcome.execution !== undefined) setDispatchResult(outcome.execution)
+                setDispatchMessage(
+                  outcome.status === 'accepted'
+                    ? t('execution.dispatch.accepted')
+                    : t('execution.dispatch.sessionReady'),
+                )
+                if (outcome.errorCode !== undefined) {
+                  setDispatchError(messageForCode(t, outcome.errorCode))
+                }
+                return
+              }
               const ready = await callApi<{ execution: ClientExecutionRecord }>({
                 op: 'execution-session',
                 executionId: record.executionId,
@@ -2285,6 +2389,17 @@ window.__ModuleLoader__.load({
                 (record.status === 'prepared' ||
                   record.status === 'session_ready' ||
                   record.status === 'unknown')
+              const reuseRecoverable =
+                record !== null &&
+                record.strategy === 'reuse' &&
+                record.sourceSessionId !== undefined &&
+                record.targetSessionId === undefined &&
+                (record.status === 'dispatching' || record.status === 'unknown')
+              if (reuseRecoverable && targetId === undefined) {
+                buttons.push(
+                  actionButton(t('execution.dispatch.recoverReuse'), () => void resumeDispatch()),
+                )
+              }
               if (record?.status === 'prepared') {
                 buttons.push(
                   actionButton(t('execution.dispatch.resume'), () => void resumeDispatch()),
@@ -2302,7 +2417,12 @@ window.__ModuleLoader__.load({
                   actionButton(t('execution.dispatch.continue'), () => void resumeDispatch()),
                 )
               }
-              if (dispatchSessionId !== null && dispatchError !== null && record !== null) {
+              if (
+                record !== null &&
+                record.strategy !== 'reuse' &&
+                dispatchSessionId !== null &&
+                dispatchError !== null
+              ) {
                 buttons.push(
                   actionButton(t('execution.dispatch.persistFailed').replace('{id}', dispatchSessionId), () =>
                     void retryPersistSession(),

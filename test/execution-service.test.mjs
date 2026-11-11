@@ -136,7 +136,15 @@ function makeHarness(options = {}) {
     nowMs += ms
     nowIso = new Date(nowMs).toISOString()
   }
-  return { service, store, snapshots, advance, nowMs: () => nowMs }
+  return {
+    service,
+    store,
+    snapshots,
+    eventsById,
+    persistence,
+    advance,
+    nowMs: () => nowMs,
+  }
 }
 
 function newIntent(overrides = {}) {
@@ -250,31 +258,37 @@ test('reuse must target its source; fork must target a different child', async (
   assert.equal(child.status, 'session_ready')
 })
 
-test('dispatching can start before create/fork and is idempotent', async () => {
+test('acquire starts dispatching and legacy dispatching cannot bypass it', async () => {
   const { service, store } = makeHarness()
   const record = await service.createIntent(newIntent())
 
-  // The Client records "dispatching" before the non-idempotent create/fork.
-  const dispatching = await service.beginDispatching(record.executionId)
-  assert.equal(dispatching.status, 'dispatching')
-  assert.equal(dispatching.targetSessionId, undefined)
+  // The old interface must not let a legacy Client start create/fork without
+  // the Host-issued execution right.
+  await assert.rejects(
+    service.beginDispatching(record.executionId),
+    (error) => error.code === 'invalid_transition',
+  )
+  assert.equal(store.records[0].status, 'prepared')
 
-  // A retried intent returns the same non-prepared record, so the Client can
-  // never create a second Session for the same execution.
+  const acquisition = await service.acquireExecution(record.executionId)
+  assert.equal(acquisition.acquired, true)
+  assert.equal(store.records[0].status, 'dispatching')
+
+  // A retried intent returns the same non-prepared record.
   const retried = await service.createIntent(newIntent())
   assert.equal(retried.executionId, record.executionId)
   assert.equal(retried.status, 'dispatching')
   assert.equal(store.records.length, 1)
 
   await service.markSessionReady(record.executionId, 'session-new')
-  const again = await service.beginDispatching(record.executionId)
-  assert.equal(again.status, 'dispatching')
+  const promptPhase = await service.beginDispatching(record.executionId)
+  assert.equal(promptPhase.status, 'dispatching')
 })
 
 test('interrupted create/fork becomes unknown instead of being retried', async () => {
   const { service, store, advance } = makeHarness()
   const record = await service.createIntent(newIntent())
-  await service.beginDispatching(record.executionId)
+  await service.acquireExecution(record.executionId)
 
   // Another window polling immediately must not mark in-flight work unknown.
   const immediate = await service.getStatus(record.executionId)
@@ -629,7 +643,7 @@ test('accepted remains the final state under concurrent late callbacks', async (
 test('abandon is rejected while a dispatch is in flight', async () => {
   const { service } = makeHarness()
   const record = await service.createIntent(newIntent())
-  await service.beginDispatching(record.executionId)
+  await service.acquireExecution(record.executionId)
   await assert.rejects(
     service.abandonExecution(record.executionId),
     (error) => error.code === 'invalid_transition',
@@ -777,5 +791,174 @@ test('authorizePromptRetry never authorizes when the log already proves acceptan
   assert.equal(authorization.authorized, false)
   assert.equal(authorization.execution.status, 'accepted')
   assert.equal(store.records[0].status, 'accepted')
+})
+
+// ---------------------------------------------------------------------------
+// Review round 3: Session reuse, reuse recovery, legacy interface, retry safety
+// ---------------------------------------------------------------------------
+
+test('new Session accepted, then another Todo reuses the same Session', async () => {
+  const snapshot = persistedSession('session-shared', { eventCount: 0 })
+  const { service, snapshots, eventsById } = makeHarness({
+    todos: [todo(), todo({ id: 'todo-2', title: 'Reuse task' })],
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      snapshot,
+    ],
+    eventsById: {
+      'session-src': [{ type: 'turn/start' }],
+      'session-shared': [],
+    },
+  })
+  const first = await service.createIntent(newIntent({ clientRequestId: 'c1' }))
+  await service.markSessionReady(first.executionId, 'session-shared')
+  await service.beginDispatching(first.executionId)
+  eventsById['session-shared'].push({
+    type: 'user/message',
+    data: { source: { rpcId: 'req-1' } },
+  })
+  const accepted = await service.reportPromptResult(first.executionId, { outcome: 'accepted' })
+  assert.equal(accepted.status, 'accepted')
+
+  // The Session is now non-blank and already bound to the first execution.
+  snapshot.eventCount = 5
+  eventsById['session-shared'].push({ type: 'turn/start' })
+
+  const second = await service.createIntent(
+    newIntent({
+      clientRequestId: 'c2',
+      todoId: 'todo-2',
+      strategy: 'reuse',
+      sourceSessionId: 'session-shared',
+    }),
+  )
+  await service.acquireExecution(second.executionId) // no create/fork for reuse
+  const bound = await service.markSessionReady(second.executionId, 'session-shared')
+  assert.equal(bound.status, 'session_ready')
+  assert.equal(bound.targetSessionId, 'session-shared')
+  await service.beginDispatching(second.executionId)
+  eventsById['session-shared'].push({
+    type: 'user/message',
+    data: { source: { rpcId: 'req-2' } },
+  })
+  const secondAccepted = await service.reportPromptResult(second.executionId, { outcome: 'accepted' })
+  assert.equal(secondAccepted.status, 'accepted')
+  assert.notEqual(accepted.requestId, secondAccepted.requestId)
+
+  // Same Todo may start another independent execution after acceptance.
+  const third = await service.createIntent(
+    newIntent({ clientRequestId: 'c3', todoId: 'todo-1' }),
+  )
+  assert.equal(third.status, 'prepared')
+  assert.equal(snapshots.length > 0, true)
+})
+
+test('reuse recovery binds the original source Session without create/fork', async () => {
+  const { service, eventsById } = makeHarness({
+    snapshots: [
+      persistedSession('session-src', { eventCount: 3 }),
+      persistedSession('session-other', { eventCount: 2 }),
+    ],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+  })
+  const record = await service.createIntent(
+    newIntent({ strategy: 'reuse', sourceSessionId: 'session-src' }),
+  )
+  await service.acquireExecution(record.executionId)
+
+  const recovery = await service.recoverReuseExecution(record.executionId)
+  assert.equal(recovery.recovered, true)
+  assert.equal(recovery.execution.status, 'session_ready')
+  assert.equal(recovery.execution.targetSessionId, 'session-src')
+  assert.equal(recovery.execution.executionId, record.executionId)
+  assert.equal(recovery.execution.requestId, record.requestId)
+  assert.equal(recovery.execution.promptText, record.promptText)
+
+  // The Prompt is now sent with the same execution/request/snapshot.
+  await service.beginDispatching(record.executionId)
+  eventsById['session-src'].push({
+    type: 'user/message',
+    data: { source: { rpcId: record.requestId } },
+  })
+  const accepted = await service.reportPromptResult(record.executionId, { outcome: 'accepted' })
+  assert.equal(accepted.status, 'accepted')
+})
+
+test('reuse recovery promotes an already accepted Prompt without re-sending', async () => {
+  const recordRequest = 'req-1'
+  const { service } = makeHarness({
+    snapshots: [persistedSession('session-src', { eventCount: 3 })],
+    eventsById: {
+      'session-src': [
+        { type: 'turn/start' },
+        { type: 'user/message', data: { source: { rpcId: recordRequest } } },
+      ],
+    },
+  })
+  const record = await service.createIntent(
+    newIntent({ strategy: 'reuse', sourceSessionId: 'session-src' }),
+  )
+  await service.acquireExecution(record.executionId)
+  const recovery = await service.recoverReuseExecution(record.executionId)
+  assert.equal(recovery.recovered, true)
+  assert.equal(recovery.execution.status, 'accepted')
+  assert.equal(recovery.execution.targetSessionId, 'session-src')
+})
+
+test('reuse recovery keeps unknown when the source log cannot be read', async () => {
+  const failOpen = new Set()
+  const persistence = fakePersistence({
+    snapshots: [persistedSession('session-src', { eventCount: 3 })],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+    failOpen,
+  })
+  const { service } = makeHarness({ persistence })
+  const record = await service.createIntent(
+    newIntent({ strategy: 'reuse', sourceSessionId: 'session-src' }),
+  )
+  await service.acquireExecution(record.executionId)
+  failOpen.add('session-src')
+
+  const recovery = await service.recoverReuseExecution(record.executionId)
+  assert.equal(recovery.recovered, false)
+  assert.equal(recovery.execution.status, 'unknown')
+  assert.equal(recovery.execution.errorCode, 'recovery_verification_unavailable')
+})
+
+test('authorizePromptRetry refuses to authorize when the log is unreadable', async () => {
+  const failOpen = new Set()
+  const persistence = fakePersistence({
+    snapshots: [persistedSession('session-src', { eventCount: 3 }), persistedSession('session-new', { eventCount: 0 })],
+    eventsById: { 'session-src': [{ type: 'turn/start' }] },
+    failOpen,
+  })
+  const { service } = makeHarness({ persistence })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.markUnknown(record.executionId, 'prompt/timeout')
+  failOpen.add('session-new')
+
+  const authorization = await service.authorizePromptRetry(record.executionId)
+  assert.equal(authorization.authorized, false)
+  assert.equal(authorization.execution.status, 'unknown')
+  assert.equal(authorization.execution.errorCode, 'recovery_verification_unavailable')
+})
+
+test('authorizePromptRetry refuses to authorize at the scan limit', async () => {
+  const manyEvents = Array.from({ length: 20_001 }, () => ({ type: 'turn/start' }))
+  const { service } = makeHarness({
+    snapshots: [persistedSession('session-src', { eventCount: 3 }), persistedSession('session-new', { eventCount: 0 })],
+    eventsById: {
+      'session-src': [{ type: 'turn/start' }],
+      'session-new': manyEvents,
+    },
+  })
+  const record = await service.createIntent(newIntent())
+  await service.markSessionReady(record.executionId, 'session-new')
+  await service.markUnknown(record.executionId, 'prompt/timeout')
+
+  const authorization = await service.authorizePromptRetry(record.executionId)
+  assert.equal(authorization.authorized, false)
+  assert.equal(authorization.execution.status, 'unknown')
 })
 

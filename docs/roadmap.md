@@ -16,7 +16,7 @@
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
 | Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | **第二轮审查修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **第三轮审查修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
 | Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
@@ -142,7 +142,15 @@
 
 ## Task 03B：执行派发
 
-**状态：第二轮代码审查修复完成（版本 0.4.2，待复审；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+**状态：第三轮代码审查修复完成（版本 0.4.3，待复审；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+
+**第三轮审查修复（2026-11-10）**：
+
+- **复用会话绑定**：`boundElsewhere` 只约束新建/Fork 目标防冒领；`reuse` 允许一个 Session 关联多条 execution（每条独立 requestId），不同 Todo、同一 Todo accepted 之后均可复用；复用仍校验 Workspace、来源 Session、非空白与执行状态，并仍受未解决执行/防重规则约束。
+- **复用失败恢复**：新增 `execution-reuse-recover`。当 reuse 的 targetSessionId 缺失但 sourceSessionId 已确定时，重新校验 Workspace/来源会话并用原 executionId/requestId/Prompt 快照恢复绑定；不创建/Fork；先只读日志核验，已 accepted 则直接升级，日志不可读/超限则保持 unknown，不自动派发。Client 对 reuse 失败不再显示“会话已创建”，而是显示实际业务错误并提供“恢复复用绑定”入口。
+- **旧接口收紧**：`execution-dispatching` 不再接受 prepared→dispatching，仅用于 `session_ready` 的 Prompt 阶段；旧 Client 无法绕过 `execution-acquire` 进入 create/fork。已有 prepared 执行仍可通过 acquire 恢复。
+- **Prompt 重试收紧**：`authorizePromptRetry` 在日志 accepted 时只升级不重发；日志不可读/扫描超限（unknown）时拒绝授权并保持 unknown；仅 `not-found` 时按 requestId 幂等契约授权一次安全重试，仍不 create/fork。
+- 测试增至 **148/148**：新建 accepted 后其他 Todo 复用、同一 Todo accepted 后新执行、reuse 关联失败恢复、旧接口绕过、日志不可读/扫描上限、并发恢复等。
 
 **第二轮审查修复（2026-11-10）**：
 
@@ -160,7 +168,7 @@
 - **目标绑定校验**：复用必须绑定原来源；新建/Fork 目标必须晚于执行意图创建、不能被其他执行占用；人工候选绑定按原策略复核（new 需空白、fork 不得为源/空白），并记录 `bindingSource: manual` + UI 提醒 Host 无法自动证明来源。
 - 测试增至 **129/129**，覆盖重复点击/并发请求/跨窗口等效并发 intent、网络错误码歧义、Host 回执失败与刷新恢复、accepted 并发保护、目标不可覆盖、宽限期、放弃与人工绑定校验。
 
-**实现（2026-11-10，版本 0.4.0；0.4.1/0.4.2 为两轮审查修复）**：
+**实现（2026-11-10，版本 0.4.0；0.4.1/0.4.2/0.4.3 为三轮审查修复）**：
 
 - 采用已确认的 Client 授权链路：`ctx.sessions.create/fork` + `ctx.sessions.retain` + `SessionFace.prompt(..., 'queue', ..., requestId)`；Host 不调用任何 Remote Session 方法；
 - 新建使用 `create()` 返回的实际 Session ID（不预生成 proposedSessionId）；Fork 默认 `allowMigration:false`；创建/Fork 成功后先经 `execution-session` 持久化目标 Session，再发送 Prompt；
@@ -169,7 +177,7 @@
 - Host 独立核验：只读扫描目标 Session 日志中 `user/message` 的 `source.rpcId === requestId`；Client 报告的 accepted 未通过核验时保持 `dispatching`，不直接标记 accepted；
 - Fork 未知结果：不自动重试；Host 列出 intent 之后、同 Workspace、未被绑定的候选会话，由用户手动绑定后继续；
 - UI：真实「确认并派发」、派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选核对/绑定、未命名会话短 ID/时间显示、中英文与明暗主题；
-- 测试：139/139（Host 意图/校验/状态机并发/执行权租约/日志核验/恢复/放弃 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失/刷新恢复/并发抢权/unknown Prompt 恢复等路径）。
+- 测试：148/148（Host 意图/校验/状态机并发/执行权租约/日志核验/恢复/放弃/复用共享与恢复 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失/刷新恢复/并发抢权/unknown Prompt 恢复等路径）。
 
 **已知限制**：archive/已完成轮次无法由 public Host API 预检（由 Remote prompt 最终裁决）；Fork 无幂等键；Client `sessions.create/list` 属随版本发布契约；真实 GUI 派发/刷新恢复尚未人工验收。
 
@@ -307,6 +315,7 @@
 | 2026-11-10 | Task 03B 实现（0.4.0）：Client 授权链路 create/fork/retain/prompt + Host 执行意图/独立执行记录域/日志核验/候选绑定 + UI 接通；111/111 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 第一轮审查修复（0.4.1）：未解决执行防重/显式放弃、保守异常分类、Host 回执失败待核验、状态机临界区与 accepted 保护、中断宽限、目标绑定复核；129/129 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 第二轮审查修复（0.4.2）：非幂等 create/fork 独占执行权租约、clientRequestId 完整参数幂等比较、unknown 安全 Prompt 重试授权；139/139 测试通过 | 已完成 |
+| 2026-11-10 | Task 03B 第三轮审查修复（0.4.3）：复用共享 Session、reuse 失败恢复、旧 dispatching 接口收紧、Prompt 重试严格按日志结果授权；148/148 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 

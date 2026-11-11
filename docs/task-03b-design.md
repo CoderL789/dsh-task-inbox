@@ -1,6 +1,14 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.2 完成第二轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1/§0.2 记录实现与修复差异。
+> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.3 完成第三轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1/§0.2/§0.3 记录实现与修复差异。
+
+## 0.4 第三轮代码审查修复（0.4.3）
+
+- **复用共享 Session**：`reuse` 允许一个 Session 关联多条 execution（每条独立 requestId），不同 Todo、同一 Todo accepted 后均可复用；`boundElsewhere` 防冒领仅约束 new/fork 目标。复用仍校验 Workspace/来源/非空白/执行状态。
+- **复用失败恢复**：新增 `execution-reuse-recover`；targetSessionId 缺失但 sourceSessionId 已确定时，按原 executionId/requestId/Prompt 快照重新校验并绑定来源 Session，不 create/fork；先只读日志，accepted 直接升级、unknown（不可读/超限）保持 unknown 不派发、not-found 绑定后同 requestId 安全重试；Client 不再把 reuse 失败误报为“会话已创建”。
+- **旧接口收紧**：`execution-dispatching` 只做 `session_ready → dispatching` 的 Prompt 阶段转换；prepared 必须经 `execution-acquire`，旧 Client 无法绕过独占执行权。
+- **Prompt 重试收紧**：日志 accepted 只升级不重发；日志 unknown（不可读/扫描上限）不授权、保持 unknown；仅 not-found 按 requestId 幂等授权一次重试，且不 create/fork。
+- 测试 148/148（复用场景、恢复、旧接口绕过、日志不可读/扫描上限、并发恢复等）。
 
 ## 0.3 第二轮代码审查修复（0.4.2）
 

@@ -52,6 +52,7 @@ export type ApiOperation =
   | { op: 'execution-dispatching'; executionId: string }
   | { op: 'execution-acquire'; executionId: string }
   | { op: 'execution-prompt-retry'; executionId: string }
+  | { op: 'execution-reuse-recover'; executionId: string }
   | { op: 'execution-result'; executionId: string; outcome: 'accepted' | 'failed' | 'unknown'; errorCode?: string }
   | { op: 'execution-status'; executionId?: string; todoId?: string }
   | { op: 'execution-candidates'; executionId: string }
@@ -149,6 +150,7 @@ export function parseApiPayload(payload: unknown): ParseResult {
     case 'execution-dispatching':
     case 'execution-acquire':
     case 'execution-prompt-retry':
+    case 'execution-reuse-recover':
     case 'execution-candidates': {
       const executionId = readStringField(payload, 'executionId')
       if (executionId === undefined) {
@@ -346,6 +348,19 @@ export async function handleOperation(
         return success({
           execution: authorization.execution,
           authorized: authorization.authorized,
+        })
+      }
+      case 'execution-reuse-recover': {
+        if (executionService === undefined) {
+          return failure('execution_unavailable', 'Execution dispatch is not available in this profile.')
+        }
+        if (typeof executionService.recoverReuseExecution !== 'function') {
+          return failure('execution_unavailable', 'Reuse recovery is not available.')
+        }
+        const recovery = await executionService.recoverReuseExecution(operation.executionId)
+        return success({
+          execution: recovery.execution,
+          recovered: recovery.recovered,
         })
       }
       case 'execution-result': {

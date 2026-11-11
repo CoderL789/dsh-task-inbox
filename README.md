@@ -12,7 +12,7 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 执行后由插件记录执行结果。待办因此可以跨会话、跨上下文、跨重启地存活。
 
-> Task 03A 已通过验收；**Task 03B（真实 Agent 派发）实现完成，并已修复两轮代码审查发现的异常恢复/幂等/并发执行权问题（版本 0.4.2，待复审）**。每条待办可配置执行上下文并「确认并派发」：Client 经 DSH 正常 Remote 授权链路创建/复用/Fork Session 并发送 Prompt，Host 负责派发前重新校验、执行意图/关联持久化、接受结果独立核验与异常恢复。开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由用户在 GUI 中确认触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)与[已知限制](#已知限制)。
+> Task 03A 已通过验收；**Task 03B（真实 Agent 派发）实现完成，并已修复三轮代码审查发现的异常恢复/幂等/并发执行权/会话复用问题（版本 0.4.3，待复审）**。每条待办可配置执行上下文并「确认并派发」：Client 经 DSH 正常 Remote 授权链路创建/复用/Fork Session 并发送 Prompt，Host 负责派发前重新校验、执行意图/关联持久化、接受结果独立核验与异常恢复。开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由用户在 GUI 中确认触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)与[已知限制](#已知限制)。
 
 ## 为什么需要待办箱
 
@@ -34,11 +34,11 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 当前为 **Task 03B：真实 Agent 派发**（实现完成，待用户验收）。已具备：
 
-- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.2`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
+- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.3`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
 - **Host 半区**：Todo 存储域 `task_inbox` 保持 v2 不变、**不迁移/不重写**；新增独立执行记录域 `task_inbox_executions`（v1、JSON 单文件），用于执行意图/关联/状态持久化。Host 通过受认证 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 提供 Todo CRUD、只读 `execution-context`、`execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` 等协调操作；派发前用 public Host 服务重新校验 Todo/Workspace/Session，并**只读扫描 Session 日志中的 requestId（user/message source.rpcId）独立核验接受结果**；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；Todo CRUD；执行前配置（工作区 / 策略 / 来源会话 / 摘要 / 校验）；「确认并派发」通过 `ctx.sessions.create/fork`（正常 Remote 授权链路）+ `ctx.sessions.retain` + `SessionFace.prompt(..., requestId)` 完成新建/复用/Fork 派发；派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、候选会话人工核对/绑定与安全继续；中英文与明暗主题适配；
 - 数据模型：Todo 字段不变；执行记录包含 `executionId`、稳定的 `requestId`、`clientRequestId`、Todo 快照、策略、Workspace 快照、来源/目标 Session、状态（prepared/session_ready/dispatching/accepted/failed/unknown）、错误码与时间戳；
-- 139 个 Node 测试覆盖 Todo/存储/迁移/HTTP、执行上下文与空白三态、派发前置校验、Host 执行意图/状态机并发/恢复/核验/放弃/候选绑定/执行权租约/Prompt 重试授权，以及 Client 派发编排（mock `ctx.sessions`）的成功、失败、网络歧义、回执丢失、刷新恢复、并发抢权与 unknown 恢复路径。
+- 148 个 Node 测试覆盖 Todo/存储/迁移/HTTP、执行上下文与空白三态、派发前置校验、Host 执行意图/状态机并发/恢复/核验/放弃/候选绑定/执行权租约/Prompt 重试授权，以及 Client 派发编排（mock `ctx.sessions`）的成功、失败、网络歧义、回执丢失、刷新恢复、并发抢权与 unknown 恢复路径。
 
 | 能力 | 当前 | 后续 |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 | 执行前配置预览（工作区 / 策略 / 来源会话 / 校验） | ✅ 已具备 | — |
 | 工作区选择（真实绑定） | ✅ 派发时写入执行记录 | — |
 | 会话策略：新建 / 复用 / Fork（真实创建/恢复） | ✅ Task 03B（Client 授权 Remote） | — |
-| 执行派发与 Agent 执行 | ✅ 已实现（接受确认 + 独立核验；两轮审查修复完成；未真实测试） | — |
+| 执行派发与 Agent 执行 | ✅ 已实现（接受确认 + 独立核验；三轮审查修复完成；未真实测试） | — |
 | 执行状态、历史与结果关联 | 🟡 仅安全派发状态；完整状态机/历史 | Task 04 |
 | 「标记完成」 | ❌（本阶段有意不做） | Task 04 随执行状态设计 |
 | 自动化 UI 测试 | ❌ | Task 05 评估 |
@@ -183,7 +183,10 @@ dsh-task-inbox/
 - **Client 契约风险**：派发依赖随版本发布的 Client `ctx.sessions.create/fork` 与 `SessionFace.prompt`（not Inspect 方法目录中的 `create/list`，但由 `ISessions` 类型与构建实现提供），非文档化第三方 API；升级 DSH 后需回归；
 - **会话限制**：Host 使用的 public API 无法确认 archive 状态与「已完成轮次」，由真实 Remote prompt 的 Host 规则最终裁决；Fork 默认不迁移（`allowMigration:false`），需要迁移时必须由用户显式授权（当前 UI 未提供迁移选项）；
 - **幂等边界**：新建/Fork 没有 DSH 侧幂等键；Host 用 `execution-acquire` 在串行化 mutation 内切换 prepared→dispatching 并发放**执行权租约**（token + 过期时间）；只有 `acquired: true` 的 Client 才能调用 create/fork，其他并发/重试调用只能读取状态；租约不会重新发放，重启/超时后只能走 unknown/恢复。同一 `clientRequestId` 必须 todoId/workspaceId/strategy/sourceSessionId 完全一致才返回原记录，否则 `execution_conflict`；
-- **Prompt 重试授权**：unknown + target 不会当作 session_ready 直接重发；Client 先刷新 Host 状态，Host 只读日志核验 accepted（已接受则不再发送），否则 `execution-prompt-retry` 只授权一个调用者，严格复用相同 executionId/targetSessionId/requestId/不可变 Prompt 快照，且永不 create/fork；无法授权时保持 unknown 提示人工检查；
+- **Prompt 重试授权**：unknown + target 不会当作 session_ready 直接重发；Client 先刷新 Host 状态，Host 只读日志核验 accepted（已接受则不再发送）；日志不可读或扫描超限时不授权重试、保持 unknown；只有明确 not-found 才按同一 executionId/targetSessionId/requestId/不可变 Prompt 快照授权一次安全重试，且永不 create/fork；
+- **会话复用**：一个 Session 可以关联多条 execution（每条独立 requestId）；不同 Todo、同一 Todo 在 accepted 后均可明确发起新的「复用」执行。新建/Fork 的目标 Session 仍受防冒领保护（不能被其他创建操作绑定）。
+- **复用关联失败恢复**：若 reuse 的 targetSessionId 未保存但 sourceSessionId 已确定，Host `execution-reuse-recover` 会重新校验 Workspace/来源会话并用原始 executionId/requestId/Prompt 快照恢复绑定；不创建/Fork，先只读日志核验（日志不可读则保持 unknown，不自动派发）。
+- **旧接口收紧**：`execution-dispatching` 只接受 `session_ready → dispatching` 的 Prompt 阶段转换；无 acquire 授权的 prepared execution 不能经旧接口进入创建/Fork 流程。
 - **异常分类保守**：只有明确的 Host/Remote 业务拒绝码才视为确定失败；网络超时/连接中断即使带 `code` 也按 unknown 处理；
 - **服务端防重与放弃**：同一 Todo 存在未解决执行时，Host 拒绝新的执行意图（`execution_unresolved`）；必须显式「放弃此执行」（二次确认）后才能发起新的独立执行；`dispatching` 在途时不允许放弃；
 - **未确认结果恢复**：Prompt 已接受但 Host 结果更新失败时保持 `dispatching`，保留 executionId/requestId/目标 Session，通过只读日志核验恢复；不会因此创建新 Session；

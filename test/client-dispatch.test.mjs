@@ -57,6 +57,8 @@ class FakeHost {
     this.sessionReadyError = options.sessionReadyError
     this.verifiedStatus = options.verifiedStatus
     this.resultFailures = options.resultFailures ?? 0
+    this.authorizeDisabled = options.authorizeDisabled ?? false
+    this.recoveryDisabled = options.recoveryDisabled ?? false
     this.acquired = false
   }
 
@@ -77,11 +79,33 @@ class FakeHost {
 
   async authorizePromptRetry(executionId) {
     this.calls.push(['authorizePromptRetry', executionId])
-    if (this.record.status !== 'unknown' || this.record.targetSessionId === undefined) {
+    if (this.authorizeDisabled || this.record.status !== 'unknown' || this.record.targetSessionId === undefined) {
       return { execution: this.record, authorized: false }
     }
     this.record = { ...this.record, status: 'dispatching' }
     return { execution: this.record, authorized: true }
+  }
+
+  async recoverReuse(executionId) {
+    this.calls.push(['recoverReuse', executionId])
+    if (
+      this.recoveryDisabled ||
+      this.record.strategy !== 'reuse' ||
+      this.record.sourceSessionId === undefined
+    ) {
+      this.record = {
+        ...this.record,
+        status: 'unknown',
+        errorCode: 'recovery_verification_unavailable',
+      }
+      return { execution: this.record, recovered: false }
+    }
+    this.record = {
+      ...this.record,
+      status: 'session_ready',
+      targetSessionId: this.record.sourceSessionId,
+    }
+    return { execution: this.record, recovered: true }
   }
 
   async intent(input) {
@@ -540,4 +564,75 @@ test('concurrent unknown recovery never create/fork and converges to accepted', 
   assert.equal(callNames(sessions).includes('fork'), false)
   assert.equal(results.filter((entry) => entry.status === 'accepted').length >= 1, true)
   assert.equal(sessions.calls.filter((call) => call[0] === 'prompt').length <= 2, true)
+})
+
+// ---------------------------------------------------------------------------
+// Review round 3: reuse binding recovery and conservative retry authorization
+// ---------------------------------------------------------------------------
+
+test('reuse association failure recovers the source Session without create/fork', async () => {
+  const source = 'session-src'
+  const host = new FakeHost({
+    record: baseRecord({
+      strategy: 'reuse',
+      status: 'dispatching',
+      sourceSessionId: source,
+    }),
+  })
+  const sessions = new FakeSessions()
+  const stale = baseRecord({
+    strategy: 'reuse',
+    status: 'dispatching',
+    sourceSessionId: source,
+  })
+  const result = await hooks.resumeDispatchFlow({ host, sessions }, stale)
+
+  assert.equal(result.status, 'accepted')
+  assert.equal(callNames(sessions).includes('create'), false)
+  assert.equal(callNames(sessions).includes('fork'), false)
+  const prompt = sessions.calls.find((call) => call[0] === 'prompt')
+  assert.equal(prompt[1], source)
+  assert.equal(prompt[5], 'req-1')
+  assert.equal(prompt[2][0].text, stale.promptText)
+  assert.equal(host.calls.filter((call) => call[0] === 'recoverReuse').length, 1)
+})
+
+test('reuse recovery keeps unknown and sends no Prompt when the log is unreadable', async () => {
+  const source = 'session-src'
+  const host = new FakeHost({
+    record: baseRecord({
+      strategy: 'reuse',
+      status: 'dispatching',
+      sourceSessionId: source,
+    }),
+    recoveryDisabled: true,
+  })
+  const sessions = new FakeSessions()
+  const stale = baseRecord({
+    strategy: 'reuse',
+    status: 'dispatching',
+    sourceSessionId: source,
+  })
+  const result = await hooks.resumeDispatchFlow({ host, sessions }, stale)
+
+  assert.equal(result.status, 'unknown')
+  assert.equal(result.errorCode, 'recovery_verification_unavailable')
+  assert.equal(callNames(sessions).length, 0)
+})
+
+test('unknown recovery is blocked when the Host cannot verify the log', async () => {
+  const target = 'session-existing'
+  const host = new FakeHost({
+    record: baseRecord({ status: 'unknown', targetSessionId: target }),
+    authorizeDisabled: true,
+  })
+  const sessions = new FakeSessions()
+  const result = await hooks.resumeDispatchFlow(
+    { host, sessions },
+    baseRecord({ status: 'unknown', targetSessionId: target }),
+  )
+
+  assert.equal(result.status, 'unknown')
+  assert.equal(result.errorCode, 'prompt_retry_not_authorized')
+  assert.equal(callNames(sessions).length, 0)
 })

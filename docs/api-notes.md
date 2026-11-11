@@ -717,3 +717,11 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - **clientRequestId 完整比较**：intent 幂等匹配在 mutation 内再次比较 `todoId / workspaceId / strategy / sourceSessionId`；相同 id 不同参数返回 `execution_conflict`，不会返回其他 Todo/Workspace 的执行记录。
 - **unknown 安全 Prompt 重试**：新增 `execution-prompt-retry`。Host 先只读 Session 日志核验 `requestId`：已 accepted 则升级并返回 `authorized: false`；否则仅一个调用者获得 `authorized: true` 并 unknown→dispatching，严格复用记录中的 executionId/targetSessionId/requestId/promptText，永不 create/fork。Client 恢复前先 `execution-status` 刷新；Prompt 阶段再次查询 Host，accepted/failed 不再发送；未授权保持 unknown。
 - **测试**：139/139；新增并发抢权（create/fork 最多一次）、相同 clientRequestId 不同参数并发冲突、unknown+target 恢复、迟到 accepted 不重发、并发恢复、Prompt 回执丢失等。
+
+### 8. 第三轮代码审查修复（2026-11-10，版本 0.4.3）
+
+- **复用共享 Session**：`boundElsewhere` 仅阻止新建/Fork 目标被其他 execution 冒领；`reuse` 执行允许绑定已被其他 execution 使用/已 accepted 的 Session，一个 Session 可关联多条 execution（每条独立 requestId）。复用仍校验 Workspace、来源 Session 非空白、执行状态；同一 Todo 在 accepted 后也可创建新的独立执行。
+- **复用失败恢复**：新增 `execution-reuse-recover`。reuse 且 targetSessionId 缺失、sourceSessionId 已知时，重新校验来源/Workspace，用原 executionId、requestId、Prompt 快照恢复绑定；先只读日志：accepted→直接升级；unknown（不可读/扫描超限）→保持 unknown 不派发；not-found→绑定为 session_ready 后由同一 requestId 安全重试。不创建/Fork、不覆盖/删除执行记录。
+- **旧接口收紧**：`execution-dispatching` 仅接受 `session_ready → dispatching`，prepared 必须经 `execution-acquire`；旧 Client 无法绕过独占执行权；现有 prepared 执行仍可通过 acquire 恢复。
+- **Prompt 重试收紧**：`authorizePromptRetry` 在日志 accepted 时只升级；日志 unknown（不可读/20k 扫描上限）时不授权并保持 unknown；仅日志明确 not-found 时依据 DSH requestId 幂等授权一次重试，始终不 create/fork。
+- **测试**：148/148；新增“新建 accepted → 另一 Todo 复用同一 Session → accepted”、同 Todo accepted 后新执行、reuse 关联失败恢复、旧接口绕过拒绝、日志不可读/扫描上限禁止授权等。
