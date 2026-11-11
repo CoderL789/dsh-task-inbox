@@ -220,7 +220,7 @@ test('legacy execution records without timeline events remain schema-compatible'
 
 test('execution overview is sorted, read-only, and excludes prompt and coordination secrets', async () => {
   const { service, advance, store } = makeHarness({
-    todos: [todo('todo-1', 0), todo('todo-2', 1, { title: 'Second task' })],
+    todos: [todo(), todo({ id: 'todo-2', title: 'Second task' })],
   })
   const first = await service.createIntent(newIntent())
   advance(1000)
