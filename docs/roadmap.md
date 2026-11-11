@@ -336,6 +336,7 @@
 | 2026-11-11 | Task 03B 最终 UI 收尾（0.4.4）：历史未解决执行选择/恢复、reuse 恢复二次确认、来源/目标 Session 展示、UI single-flight；154/154 测试通过 | 已完成 |
 | 2026-11-11 | Task 03B 初始化与门禁修复（0.4.5）：Host 依赖惰性解析、execution-capability 能力探测、Client 统一派发门禁、历史空状态、Session 短 ID/去重；164/164 测试通过 | 已完成 |
 | 2026-11-11 | Task 03B 派发前置校验收紧（0.4.6）：Session Persistence 实际读取探测、acquire 前 Host 复核 Workspace/Session、reuse/fork 来源复核、Client 来源会话门禁；新增回归测试 | 已实现，待自动化回归与 GUI 验收 |
+| 2026-11-11 | 0.4.7 修复 Client currentConfirmGate 漏传策略与来源 Session 状态；抽取并测试 selectedSourceSessionGate，修复 pnpm build 编译错误 | 已提交，待本地构建与 GUI 复验 |
 | 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 

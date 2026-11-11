@@ -896,6 +896,25 @@ test('canConfirmDispatch requires loaded history, capability, workspace and no c
   assert.equal(hooks.canConfirmDispatch({ ...base, dispatchBusy: true }), false)
 })
 
+test('selectedSourceSessionGate validates the selected Session for the active strategy', () => {
+  const sessions = [
+    { sessionId: 'reuse-session', suitableForReuse: true, suitableForFork: false },
+    { sessionId: 'fork-session', suitableForReuse: false, suitableForFork: true },
+  ]
+
+  const reuse = hooks.selectedSourceSessionGate(sessions, 'reuse-session', 'reuse')
+  assert.equal(reuse.hasSelectedSourceSession, true)
+  assert.equal(reuse.selectedSourceSessionSuitable, true)
+
+  const unsuitable = hooks.selectedSourceSessionGate(sessions, 'reuse-session', 'fork')
+  assert.equal(unsuitable.hasSelectedSourceSession, true)
+  assert.equal(unsuitable.selectedSourceSessionSuitable, false)
+
+  const missing = hooks.selectedSourceSessionGate(sessions, 'missing-session', 'reuse')
+  assert.equal(missing.hasSelectedSourceSession, false)
+  assert.equal(missing.selectedSourceSessionSuitable, false)
+})
+
 test('canConfirmDispatch requires a suitable source Session for reuse and fork, but not new', () => {
   const base = {
     strategy: 'new', hasSelectedSourceSession: false, selectedSourceSessionSuitable: false,

@@ -1142,6 +1142,24 @@ function isSessionSuitableForStrategy(
   return strategy === 'new'
 }
 
+interface SelectedSourceSessionGate {
+  hasSelectedSourceSession: boolean
+  selectedSourceSessionSuitable: boolean
+}
+
+function selectedSourceSessionGate(
+  sessions: readonly ExecutionSession[],
+  selectedSessionId: string,
+  strategy: ExecutionStrategy,
+): SelectedSourceSessionGate {
+  const selected = sessions.find((session) => session.sessionId === selectedSessionId)
+  return {
+    hasSelectedSourceSession: selected !== undefined,
+    selectedSourceSessionSuitable:
+      selected !== undefined && isSessionSuitableForStrategy(selected, strategy),
+  }
+}
+
 function strategyLabel(t: Translate, strategy: ExecutionStrategy): string {
   if (strategy === 'reuse') return t('execution.strategy.reuse')
   if (strategy === 'fork') return t('execution.strategy.fork')
@@ -1766,6 +1784,7 @@ interface TaskInboxTestHooks {
   shortSessionId: typeof shortSessionId
   emptyExecutionHistory: typeof emptyExecutionHistory
   canConfirmDispatch: typeof canConfirmDispatch
+  selectedSourceSessionGate: typeof selectedSourceSessionGate
   canDispatchSelected: typeof canDispatchSelected
   dedupeExecutionSessions: typeof dedupeExecutionSessions
   sessionShortCode: typeof sessionShortCode
@@ -1784,6 +1803,7 @@ interface TaskInboxTestHooks {
   shortSessionId,
   emptyExecutionHistory,
   canConfirmDispatch,
+  selectedSourceSessionGate,
   canDispatchSelected,
   dedupeExecutionSessions,
   sessionShortCode,
@@ -2243,7 +2263,21 @@ window.__ModuleLoader__.load({
 
           function currentConfirmGate(): boolean {
             const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            const sessionsInWorkspace =
+              executionContext === null
+                ? []
+                : dedupeExecutionSessions(
+                    executionContext.sessions.filter(
+                      (session) => session.workspaceId === executionWorkspaceId,
+                    ),
+                  )
             return canConfirmDispatch({
+              strategy: executionStrategy,
+              ...selectedSourceSessionGate(
+                sessionsInWorkspace,
+                executionSessionId,
+                executionStrategy,
+              ),
               dispatchBusy,
               sessionApiAvailable: sessions !== undefined,
               historyPhase,
@@ -2882,8 +2916,10 @@ window.__ModuleLoader__.load({
             const sourceSession = sessionsInWorkspace.find(
               (session) => session.sessionId === executionSessionId,
             )
-            const selectedSourceSessionSuitable = strategySessions.some(
-              (session) => session.sessionId === executionSessionId,
+            const sourceGate = selectedSourceSessionGate(
+              sessionsInWorkspace,
+              executionSessionId,
+              executionStrategy,
             )
             const unsuitableCount = sessionsInWorkspace.length - strategySessions.length
             const unknownCount = sessionsInWorkspace.filter(
@@ -2894,8 +2930,7 @@ window.__ModuleLoader__.load({
             const workspaceReady = workspace !== undefined && workspace.available
             const confirmGate = canConfirmDispatch({
               strategy: executionStrategy,
-              hasSelectedSourceSession: sourceSession !== undefined,
-              selectedSourceSessionSuitable,
+              ...sourceGate,
               dispatchBusy,
               sessionApiAvailable: dispatchAvailable,
               historyPhase,
