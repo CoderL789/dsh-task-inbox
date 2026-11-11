@@ -59,6 +59,10 @@ test('parseApiPayload rejects malformed envelopes and operations', () => {
   const executionContext = parseApiPayload({ op: 'execution-context' })
   assert.equal(executionContext.ok, true)
   assert.equal(executionContext.operation.op, 'execution-context')
+
+  const executionOverview = parseApiPayload({ op: 'execution-overview' })
+  assert.equal(executionOverview.ok, true)
+  assert.equal(executionOverview.operation.op, 'execution-overview')
 })
 
 test('handleOperation maps service results and business errors', async () => {
@@ -213,6 +217,10 @@ test('execution operations map service results and service errors', async () => 
       calls.push(['listForTodo', todoId])
       return [{ executionId: 'exec-1', todoId }]
     },
+    listOverview() {
+      calls.push(['listOverview'])
+      return [{ executionId: 'exec-1', todoId: 'todo-1', status: 'accepted', workspacePath: '/work/a' }]
+    },
     async candidates(id) {
       calls.push(['candidates', id])
       return [{ sessionId: 'session-candidate', blankState: 'non-blank' }]
@@ -286,6 +294,20 @@ test('execution operations map service results and service errors', async () => 
     executionService,
   )
   assert.equal(status.body.data.executions.length, 1)
+
+  const overview = await handleOperation(
+    service,
+    { op: 'execution-overview' },
+    undefined,
+    executionService,
+  )
+  assert.equal(overview.body.ok, true)
+  assert.equal(overview.body.data.executions[0].workspacePath, '/work/a')
+  assert.deepEqual(calls.at(-1), ['listOverview'])
+
+  const unavailableOverview = await handleOperation(service, { op: 'execution-overview' })
+  assert.equal(unavailableOverview.body.ok, false)
+  assert.equal(unavailableOverview.body.error.code, 'execution_unavailable')
 
   const candidates = await handleOperation(
     service,
