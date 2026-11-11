@@ -12,7 +12,7 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 执行后由插件记录执行结果。待办因此可以跨会话、跨上下文、跨重启地存活。
 
-> Task 03A 已通过验收；**Task 03B（真实 Agent 派发）实现完成，并已修复三轮代码审查问题并完成最终 UI 收尾，并修复生命周期依赖注入、派发能力门禁、历史空状态与 Session 标签问题（版本 0.4.5，待复审）**。每条待办可配置执行上下文并「确认并派发」：Client 经 DSH 正常 Remote 授权链路创建/复用/Fork Session 并发送 Prompt，Host 负责派发前重新校验、执行意图/关联持久化、接受结果独立核验与异常恢复。开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由用户在 GUI 中确认触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)与[已知限制](#已知限制)。
+> Task 03A 已通过验收；Task 03B 的 0.4.7 修复已提交，当前待本地 build / typecheck / test 与 GUI 复验；Task 03C 现代工作台设计基线已确认，尚未开始 UI 实施。真实 Session 创建 / Fork / Prompt 的验收仍由用户在 DSH GUI 中明确触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)和[Task 03C 设计稿](docs/task-03c-design.md)。
 
 ## 为什么需要待办箱
 
@@ -32,13 +32,13 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 ## 当前阶段与功能矩阵
 
-当前为 **Task 03B：真实 Agent 派发**（实现完成，待用户验收）。已具备：
+当前 Task 03B 代码已推进至 **0.4.7**（修复提交已在 feature/task-03 分支，待本地构建与 GUI 复验）；Task 03C 现代工作台设计已确认，待实施。当前已具备：
 
-- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.5`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
+- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.7`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
 - **Host 半区**：Todo 存储域 `task_inbox` 保持 v2 不变、**不迁移/不重写**；新增独立执行记录域 `task_inbox_executions`（v1、JSON 单文件），用于执行意图/关联/状态持久化。Host 通过受认证 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 提供 Todo CRUD、只读 `execution-context`、`execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` 等协调操作；派发前用 public Host 服务重新校验 Todo/Workspace/Session，并**只读扫描 Session 日志中的 requestId（user/message source.rpcId）独立核验接受结果**；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；Todo CRUD；执行前配置（工作区 / 策略 / 来源会话 / 摘要 / 校验）；「确认并派发」通过 `ctx.sessions.create/fork`（正常 Remote 授权链路）+ `ctx.sessions.retain` + `SessionFace.prompt(..., requestId)` 完成新建/复用/Fork 派发；派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、候选会话人工核对/绑定与安全继续；中英文与明暗主题适配；
 - 数据模型：Todo 字段不变；执行记录包含 `executionId`、稳定的 `requestId`、`clientRequestId`、Todo 快照、策略、Workspace 快照、来源/目标 Session、状态（prepared/session_ready/dispatching/accepted/failed/unknown）、错误码与时间戳；
-- 164 个 Node 测试覆盖 Todo/存储/迁移/HTTP、执行上下文与空白三态、派发前置校验、Host 执行意图/状态机并发/恢复/核验/放弃/候选绑定/执行权租约/Prompt 重试授权，以及 Client 派发编排（mock `ctx.sessions`）的成功、失败、网络歧义、回执丢失、刷新恢复、并发抢权与 unknown 恢复路径。
+- Node 测试覆盖 Todo / 存储 / 迁移 / HTTP、执行上下文、派发前置校验、Host 状态机并发 / 恢复 / 核验 / 放弃 / 候选绑定 / 执行权租约 / Prompt 重试授权，以及 Client 派发编排的异常路径；0.4.7 新增门禁回归尚待本地全量回归确认。
 
 | 能力 | 当前 | 后续 |
 | --- | --- | --- |
@@ -57,6 +57,10 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 | 历史未解决执行选择与恢复 | ✅ 最终 UI 收尾（按 Execution 各自的 ID/requestId/快照） | — |
 | 历史空状态 / 派发能力门禁 | ✅ 0.4.5（加载失败不误显示为空；能力不可用禁用派发） | — |
 | Session 标签区分（短 ID） | ✅ 0.4.5（标题/未命名/空白/状态未知均含可区分短 ID） | — |
+| Modern Workbench 首页（概览 / 搜索 / 筛选 / 排序） | ⏳ 设计已确认 | Task 03C |
+| 右侧任务详情与 Workspace / 策略 / Session 摘要 | ⏳ 设计已确认 | Task 03C |
+| 双栏执行配置工作区 | ⏳ 设计已确认 | Task 03C |
+| Execution 持久化事件时间线 | ⏳ 设计已确认 | Task 03C；Agent Turn 完成状态属于 Task 04 |
 | 来源会话 / 目标会话区分展示 | ✅ 新建仅目标；复用可合并；Fork 分别展示 | — |
 | 「标记完成」 | ❌（本阶段有意不做） | Task 04 随执行状态设计 |
 | 自动化 UI 测试 | ❌ | Task 05 评估 |
@@ -169,7 +173,8 @@ dsh-task-inbox/
 
 - [docs/roadmap.md](docs/roadmap.md)：Task 01–05 的路线图、交付物、验收标准、风险、进度与开放问题；
 - [docs/api-notes.md](docs/api-notes.md)：DSH 插件 API 调研笔记（存储、Host/Client 通信、UI 扩展点等）；
-- [docs/task-03b-design.md](docs/task-03b-design.md)：Task 03B 执行派发技术方案（API 可行性、Session 产生/恢复/Fork、幂等与失败恢复）。
+- [docs/task-03b-design.md](docs/task-03b-design.md)：Task 03B 执行派发技术方案（API 可行性、Session 产生/恢复/Fork、幂等与失败恢复）；
+- [docs/task-03c-design.md](docs/task-03c-design.md)：Task 03C Modern Workbench UI 设计基线（主题继承、工作台、详情、执行配置、时间线与响应式验收）。
 
 ## 路线图
 
@@ -178,8 +183,9 @@ dsh-task-inbox/
 | Task 01 | 最小可运行插件骨架（插件包、侧边栏入口、空状态页、文档） | 完成（已通过验收） |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | 完成（已通过验收） |
 | Task 03A | 执行前配置与会话能力验证（仅预览，不派发） | 完成（已通过验收） |
-| Task 03B | 执行派发（新建 / 复用 / Fork 接通） | 实现完成（待用户验收） |
-| Task 04 | 执行追踪（状态、历史、结果关联） | 待开始 |
+| Task 03B | 执行派发（新建 / 复用 / Fork 接通） | 0.4.7 已提交，待本地构建与 GUI 复验 |
+| Task 03C | Modern Workbench UI 重构 | 设计基线已确认，待实施 |
+| Task 04 | Agent 执行追踪（Turn 状态、完成与结果关联） | 待开始 |
 | Task 05 | 打磨（国际化、可访问性、打包与开源发布准备） | 待开始 |
 
 各阶段的交付物、验收标准与风险见 [docs/roadmap.md](docs/roadmap.md)。
