@@ -28,6 +28,52 @@ export type ExecutionStatus =
   | 'failed'
   | 'unknown'
 
+export const EXECUTION_EVENT_KINDS = [
+  'intent_created',
+  'dispatch_started',
+  'prompt_dispatch_started',
+  'prompt_retry_started',
+  'session_ready',
+  'session_bound',
+  'prompt_accepted',
+  'prompt_failed',
+  'outcome_unknown',
+  'recovered',
+  'abandoned',
+  'status_changed',
+] as const
+
+export type ExecutionEventKind = typeof EXECUTION_EVENT_KINDS[number]
+
+/** A durable, evidence-backed event in one execution's dispatch lifecycle. */
+export interface ExecutionEvent {
+  eventId: string
+  kind: ExecutionEventKind
+  at: string
+  fromStatus?: ExecutionStatus
+  toStatus?: ExecutionStatus
+  sessionId?: string
+  bindingSource?: 'client' | 'manual'
+  errorCode?: string
+}
+
+/** Minimal cross-Todo read model for the workbench overview. */
+export interface ExecutionOverviewRecord {
+  executionId: string
+  todoId: string
+  strategy: ExecutionStrategy
+  workspaceId: string
+  workspacePath: string
+  sourceSessionId?: string
+  targetSessionId?: string
+  bindingSource?: 'client' | 'manual'
+  status: ExecutionStatus
+  errorCode?: string
+  createdAt: string
+  updatedAt: string
+  createdAtMs: number
+}
+
 export interface ExecutionRecord {
   executionId: string
   clientRequestId: string
@@ -53,6 +99,8 @@ export interface ExecutionRecord {
   updatedAt: string
   /** Creation time in epoch ms, used for fork-candidate reconciliation. */
   createdAtMs: number
+  /** Optional append-only dispatch timeline; absent on pre-03C records. */
+  events?: ExecutionEvent[]
 }
 
 export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
@@ -63,6 +111,17 @@ export const EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   'failed',
   'unknown',
 ]
+
+export const EXECUTION_EVENT_SCHEMA = z.object({
+  eventId: z.string().min(1).max(160),
+  kind: z.enum(EXECUTION_EVENT_KINDS),
+  at: z.string().min(1),
+  fromStatus: z.enum(['prepared', 'session_ready', 'dispatching', 'accepted', 'failed', 'unknown']).optional(),
+  toStatus: z.enum(['prepared', 'session_ready', 'dispatching', 'accepted', 'failed', 'unknown']).optional(),
+  sessionId: z.string().min(1).max(128).optional(),
+  bindingSource: z.enum(['client', 'manual']).optional(),
+  errorCode: z.string().max(128).optional(),
+})
 
 export const EXECUTION_RECORD_SCHEMA = z.object({
   executionId: z.string().min(1).max(128),
@@ -85,4 +144,5 @@ export const EXECUTION_RECORD_SCHEMA = z.object({
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   createdAtMs: z.number().int().min(0),
+  events: z.array(EXECUTION_EVENT_SCHEMA).optional(),
 })
