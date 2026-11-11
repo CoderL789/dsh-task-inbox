@@ -2168,6 +2168,8 @@ window.__ModuleLoader__.load({
           const [executionOverview, setExecutionOverview] = React.useState<ClientExecutionOverviewRecord[]>([])
           const [overviewPhase, setOverviewPhase] = React.useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
           const [overviewError, setOverviewError] = React.useState<string | null>(null)
+          const overviewRequestRef = React.useRef(0)
+          const detailHistoryRequestRef = React.useRef(0)
           const [selectedTodoId, setSelectedTodoId] = React.useState<string | null>(null)
           const listHeadingRef = React.useRef<HTMLElement | null>(null)
           const previousSelectedTodoIdRef = React.useRef<string | null>(null)
@@ -2310,6 +2312,7 @@ window.__ModuleLoader__.load({
           }
 
           async function loadExecutionOverview(signal?: AbortSignal): Promise<void> {
+            const requestId = ++overviewRequestRef.current
             setOverviewPhase('loading')
             setOverviewError(null)
             try {
@@ -2317,10 +2320,11 @@ window.__ModuleLoader__.load({
                 { op: 'execution-overview' },
                 signal,
               )
+              if (signal?.aborted || requestId !== overviewRequestRef.current) return
               setExecutionOverview(Array.isArray(data.executions) ? data.executions : [])
               setOverviewPhase('loaded')
             } catch (error) {
-              if (!isAbort(error)) {
+              if (!isAbort(error) && requestId === overviewRequestRef.current) {
                 setOverviewError(messageForCode(t, errorCode(error)))
                 setOverviewPhase('error')
               }
@@ -2328,6 +2332,7 @@ window.__ModuleLoader__.load({
           }
 
           async function loadDetailHistory(todoId: string, signal?: AbortSignal): Promise<void> {
+            const requestId = ++detailHistoryRequestRef.current
             if (signal === undefined) {
               setDetailHistoryPhase('loading')
               setDetailHistoryError(null)
@@ -2337,11 +2342,11 @@ window.__ModuleLoader__.load({
                 { op: 'execution-status', todoId },
                 signal,
               )
-              if (signal !== undefined && signal.aborted) return
+              if (signal?.aborted || requestId !== detailHistoryRequestRef.current) return
               setDetailExecutions(Array.isArray(data.executions) ? data.executions : [])
               setDetailHistoryPhase('loaded')
             } catch (error) {
-              if (!isAbort(error)) {
+              if (!isAbort(error) && requestId === detailHistoryRequestRef.current) {
                 setDetailHistoryError(messageForCode(t, errorCode(error)))
                 setDetailHistoryPhase('error')
               }
