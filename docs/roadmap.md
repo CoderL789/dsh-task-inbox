@@ -16,8 +16,9 @@
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
 | Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | **初始化/门禁修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
-| Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **0.4.7 已提交，待本地构建与 GUI 复验** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03C | Modern Workbench UI 重构 | **设计基线已确认，待实施** | 现代工作台、详情面板、Workspace 感知、执行配置工作区与统一时间线 |
+| Task 04 | Agent 执行追踪 | 待开始 | 在派发时间线之上追踪 Agent Turn、完成状态与结果关联 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
 ---
@@ -239,11 +240,44 @@
 
 ---
 
-## Task 04：执行追踪
+## Task 03C：Modern Workbench UI 重构
+
+**状态：设计基线已确认，待实施**
+
+**目标**：将当前 CRUD + 执行配置页面升级为融入 DSH 原生视觉的现代工作台。支持浅色 / 深色 / 跟随系统主题继承、概览与筛选、Workspace 感知、右侧任务详情、双栏执行配置和统一 Execution 时间线。
+
+**设计边界**：
+
+- DSH 的 ui-theme 是主题唯一权威；插件只消费 --dsw-alias-* token，不自建主题偏好。
+- Todo 仍是全局对象，不增加永久 workspaceId / sessionId；列表展示最近一次 Execution 的 Workspace / 策略 / Session，详情保留全部历史。
+- accepted 仅表示 DSH 接受 Prompt，不代表 Agent 完成。
+- 第三方 bundle 不 runtime-import DSH Client 包 / ui-primitives；控件由插件自身实现，遵守 DSH token、无障碍和交互规范。
+- Todo 域 task_inbox v2 不变；Execution 事件采用向后兼容的可选字段，必须与状态变更同一次串行化原子写入；旧记录不伪造事件。
+
+**交付物**：
+
+- 工作台首页：概览、搜索、状态 / Workspace / 策略筛选、排序和待办列表；
+- 右侧任务详情：完整 Todo、最近执行上下文、历史 Execution；
+- 执行配置工作区：参数区 + 实时摘要区，保留 Task 03B 所有 Host 门禁；
+- 统一执行时间线：持久化派发事件、状态和恢复入口；
+- 首页只读 Execution overview API、事件模型兼容测试、Client 状态与筛选测试；
+- 响应式 / 键盘 / 触屏 / 中英文 / DSH 主题 GUI 验收。
+
+**实施拆分**：03C-02 只读数据模型与事件；03C-03 工作台页面；03C-04 执行配置与时间线；03C-05 视觉、响应式和 GUI 验收。
+
+**验收标准**：主题随 DSH 通用设置无刷新同步；概览和筛选口径准确；Workspace 只按最近执行展示且历史完整；所有派发门禁保持；新记录只展示有证据的时间线事件；390px 下无主要操作裁切；build / typecheck / check / 全量测试通过；真实 Todo / Execution 存储不重置。
+
+**设计文档**：[task-03c-design.md](task-03c-design.md)。
+
+**风险**：独立 bundle 的样式交付 / CSP / 热重载需要先验证；Execution 事件字段必须兼容旧 v1 记录；Task 04 才引入 Agent Turn 完成语义。
+
+---
+
+## Task 04：Agent 执行追踪与结果关联
 
 **状态：待开始**
 
-**目标**：把「执行」当作一等对象追踪：记录状态（待执行 / 执行中 / 成功 / 失败 / 取消）、历史、绑定的会话与工作区，并提供结果关联与回溯入口。
+**目标**：在 Task 03C 的派发事件时间线之上，追踪 Agent 实际运行生命周期：Turn 开始 / 结束、成功 / 失败 / 取消、结果摘要与会话跳转。不得把 Prompt accepted 当作 Agent 完成。
 
 **交付物**：
 
@@ -337,6 +371,7 @@
 | 2026-11-11 | Task 03B 初始化与门禁修复（0.4.5）：Host 依赖惰性解析、execution-capability 能力探测、Client 统一派发门禁、历史空状态、Session 短 ID/去重；164/164 测试通过 | 已完成 |
 | 2026-11-11 | Task 03B 派发前置校验收紧（0.4.6）：Session Persistence 实际读取探测、acquire 前 Host 复核 Workspace/Session、reuse/fork 来源复核、Client 来源会话门禁；新增回归测试 | 已实现，待自动化回归与 GUI 验收 |
 | 2026-11-11 | 0.4.7 修复 Client currentConfirmGate 漏传策略与来源 Session 状态；抽取并测试 selectedSourceSessionGate，修复 pnpm build 编译错误 | 已提交，待本地构建与 GUI 复验 |
+| 2026-11-11 | Task 03C 现代工作台设计基线：确定 DSH 主题继承、工作台 / 详情 / 执行配置 / 时间线、Workspace 语义和旧 Execution 兼容边界 | 设计已写入仓库，待实施 |
 | 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 
