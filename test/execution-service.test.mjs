@@ -6,6 +6,7 @@ import {
   ExecutionServiceError,
   buildPromptSnapshot,
 } from '../lib/host/execution-service.js'
+import { EXECUTION_RECORD_SCHEMA } from '../lib/host/execution-model.js'
 
 function todo(overrides = {}) {
   return {
@@ -177,6 +178,66 @@ test('createIntent snapshots the Todo and persists a prepared execution', async 
   assert.equal(record.promptText, 'Ship it\n\nwith details')
   assert.equal(record.workspacePath, '/work/a')
   assert.equal(store.records.length, 1)
+})
+
+test('execution timeline records persisted dispatch transitions atomically', async () => {
+  const { service, store } = makeHarness()
+  const created = await service.createIntent(newIntent())
+  assert.deepEqual(created.events.map((event) => event.kind), ['intent_created'])
+
+  await service.acquireExecution(created.executionId)
+  assert.equal(store.records[0].events.at(-1).kind, 'dispatch_started')
+
+  await service.markSessionReady(created.executionId, 'session-new')
+  assert.equal(store.records[0].events.at(-1).kind, 'session_bound')
+  assert.equal(store.records[0].events.at(-1).sessionId, 'session-new')
+  assert.equal(store.records[0].events.at(-1).bindingSource, 'client')
+
+  await service.beginDispatching(created.executionId)
+  assert.equal(store.records[0].events.at(-1).kind, 'prompt_dispatch_started')
+
+  await service.markUnknown(created.executionId, 'prompt_timeout')
+  assert.equal(store.records[0].events.at(-1).kind, 'outcome_unknown')
+
+  const abandoned = await service.abandonExecution(created.executionId)
+  const event = abandoned.events.at(-1)
+  assert.equal(event.kind, 'abandoned')
+  assert.equal(event.fromStatus, 'unknown')
+  assert.equal(event.toStatus, 'failed')
+  assert.equal(event.errorCode, 'user_abandoned_session_kept')
+  assert.equal(store.records[0].events.length, 6)
+})
+
+test('legacy execution records without timeline events remain schema-compatible', async () => {
+  const { service } = makeHarness()
+  const record = await service.createIntent(newIntent())
+  const legacy = { ...record }
+  delete legacy.events
+
+  const parsed = EXECUTION_RECORD_SCHEMA.parse(legacy)
+  assert.equal(parsed.events, undefined)
+})
+
+test('execution overview is sorted, read-only, and excludes prompt and coordination secrets', async () => {
+  const { service, advance, store } = makeHarness({
+    todos: [todo('todo-1'), todo('todo-2', { title: 'Second task' })],
+  })
+  const first = await service.createIntent(newIntent())
+  advance(1000)
+  const second = await service.createIntent(newIntent({
+    clientRequestId: 'client-2',
+    todoId: 'todo-2',
+  }))
+  const before = store.records.map((record) => record.executionId)
+
+  const overview = service.listOverview()
+  assert.deepEqual(overview.map((record) => record.executionId), [second.executionId, first.executionId])
+  assert.deepEqual(store.records.map((record) => record.executionId), before)
+  assert.equal('promptText' in overview[0], false)
+  assert.equal('requestId' in overview[0], false)
+  assert.equal('clientRequestId' in overview[0], false)
+  assert.equal('dispatchLeaseToken' in overview[0], false)
+  assert.equal('events' in overview[0], false)
 })
 
 test('createIntent is idempotent by clientRequestId and rejects changed parameters', async () => {
@@ -606,6 +667,7 @@ test('getStatus can recover an unknown execution to accepted from the log', asyn
   eventsById['session-new'].push({ type: 'user/message', data: { source: { rpcId: record.requestId } } })
   const status = await service.getStatus(record.executionId)
   assert.equal(status.status, 'accepted')
+  assert.equal(status.events.at(-1).kind, 'recovered')
 })
 
 test('concurrent target bindings leave exactly one target and never overwrite', async () => {
