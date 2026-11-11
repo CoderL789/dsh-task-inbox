@@ -487,6 +487,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.list.selectHint': 'Select a task to inspect its details.',
     'workbench.detail.title': 'Task details',
     'workbench.detail.selectHint': 'Select a task to see its details and execution history.',
+    'workbench.detail.backToList': 'Back to tasks',
     'workbench.detail.execute': 'Configure execution',
     'workbench.detail.edit': 'Edit',
     'workbench.detail.delete': 'Delete',
@@ -757,6 +758,7 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
     'workbench.list.selectHint': '选择一条待办查看详情。',
     'workbench.detail.title': '待办详情',
     'workbench.detail.selectHint': '选择一条待办，查看完整内容和执行历史。',
+    'workbench.detail.backToList': '返回待办列表',
     'workbench.detail.execute': '配置执行',
     'workbench.detail.edit': '编辑',
     'workbench.detail.delete': '删除',
@@ -1268,7 +1270,7 @@ const WORKBENCH_CSS = `
 .dti-stat{min-width:0;padding:13px 15px;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
 .dti-stat-label{font-size:11px;line-height:1.4;color:var(--dsw-alias-label-secondary)}
 .dti-stat-value{margin-top:5px;font-size:23px;font-weight:500;line-height:1.25;font-variant-numeric:tabular-nums}
-.dti-toolbar{display:grid;grid-template-columns:minmax(180px,1fr) repeat(4,minmax(112px,auto));gap:8px;margin:0 0 13px;min-width:0}
+.dti-toolbar{display:grid;grid-template-columns:minmax(180px,1fr) repeat(4,minmax(96px,auto));gap:8px;margin:0 0 13px;min-width:0}
 .dti-control{box-sizing:border-box;width:100%;min-width:0;min-height:36px;padding:7px 10px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
 .dti-control:disabled{opacity:.55;cursor:not-allowed}
 .dti-task-list{overflow:hidden;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
@@ -1287,7 +1289,7 @@ const WORKBENCH_CSS = `
 .dti-status-prepared,.dti-status-session_ready,.dti-status-dispatching{color:var(--dsw-alias-brand-primary)}
 .dti-status-undispatched{color:var(--dsw-alias-label-secondary)}
 .dti-detail-pane{position:sticky;top:12px;box-sizing:border-box;min-width:0;max-height:calc(100vh - 24px);overflow:auto;padding:17px;border:0;border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-panel)}
-.dti-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.dti-detail-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.dti-detail-header-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .dti-detail-title{margin:0;font-size:16px;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
 .dti-detail-description{margin:9px 0 0;font-size:13px;line-height:1.65;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
 .dti-detail-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
@@ -1313,7 +1315,8 @@ const WORKBENCH_CSS = `
 .dti-small-button:disabled,.dti-primary-button:disabled,.dti-danger-button:disabled{opacity:.5;cursor:not-allowed}
 .dti-workbench button:focus-visible,.dti-workbench input:focus-visible,.dti-workbench select:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-brand-primary));outline-offset:2px}
 @media (hover:hover){.dti-task-row:not(.is-selected):hover{background:var(--dsw-alias-bg-layer-2)}.dti-small-button:hover:not(:disabled){border-color:var(--dsw-alias-border-l2)}}
-@media (max-width:1080px){.dti-workbench{grid-template-columns:minmax(0,1fr)}.dti-detail-pane{position:static;max-height:none}}
+.dti-detail-back{display:none}
+@media (max-width:1080px){.dti-workbench{grid-template-columns:minmax(0,1fr)}.dti-detail-pane{position:static;max-height:none}.dti-workbench:not(.detail-open) .dti-detail-pane{display:none}.dti-workbench.detail-open .dti-workbench-main{display:none}.dti-detail-back{display:inline-flex}}
 @media (max-width:720px){.dti-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))}.dti-toolbar .dti-search{grid-column:1/-1}.dti-task-row{grid-template-columns:minmax(0,1fr);align-items:start}.dti-task-actions{justify-content:flex-end}}
 @media (max-width:440px){.dti-toolbar{grid-template-columns:minmax(0,1fr)}.dti-toolbar .dti-search{grid-column:auto}.dti-detail-meta{grid-template-columns:1fr;gap:3px}.dti-detail-value{margin-bottom:6px}}
 @media (prefers-reduced-motion:reduce){.dti-workbench *{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
@@ -2166,6 +2169,8 @@ window.__ModuleLoader__.load({
           const [overviewPhase, setOverviewPhase] = React.useState<'idle' | 'loading' | 'loaded' | 'error'>('idle')
           const [overviewError, setOverviewError] = React.useState<string | null>(null)
           const [selectedTodoId, setSelectedTodoId] = React.useState<string | null>(null)
+          const listHeadingRef = React.useRef<HTMLElement | null>(null)
+          const previousSelectedTodoIdRef = React.useRef<string | null>(null)
           const [searchQuery, setSearchQuery] = React.useState('')
           const [statusFilter, setStatusFilter] = React.useState<'all' | 'undispatched' | 'unresolved' | 'accepted'>('all')
           const [workspaceFilter, setWorkspaceFilter] = React.useState('')
@@ -2250,14 +2255,17 @@ window.__ModuleLoader__.load({
           }, [])
 
           React.useEffect(() => {
-            if (todos.length === 0) {
-              if (selectedTodoId !== null) setSelectedTodoId(null)
-              return
-            }
-            if (selectedTodoId === null || !todos.some((todo) => todo.id === selectedTodoId)) {
-              setSelectedTodoId(todos[0].id)
+            if (selectedTodoId !== null && !todos.some((todo) => todo.id === selectedTodoId)) {
+              setSelectedTodoId(null)
             }
           }, [todos, selectedTodoId])
+
+          React.useEffect(() => {
+            if (previousSelectedTodoIdRef.current !== null && selectedTodoId === null) {
+              listHeadingRef.current?.focus()
+            }
+            previousSelectedTodoIdRef.current = selectedTodoId
+          }, [selectedTodoId])
 
           React.useEffect(() => {
             if (selectedTodoId === null) {
@@ -4476,8 +4484,15 @@ window.__ModuleLoader__.load({
               { className: 'dti-detail-pane' },
               h('div', { className: 'dti-detail-header' },
                 h('h2', { className: 'dti-detail-title' }, t('workbench.detail.title')),
-                h('span', { className: 'dti-status dti-status-' + (latest?.status ?? 'undispatched') },
-                  workbenchStatusLabel(latest?.status ?? 'undispatched')),
+                h('div', { className: 'dti-detail-header-actions' },
+                  h('span', { className: 'dti-status dti-status-' + (latest?.status ?? 'undispatched') },
+                    workbenchStatusLabel(latest?.status ?? 'undispatched')),
+                  h('button', {
+                    type: 'button',
+                    className: 'dti-small-button dti-detail-back',
+                    onClick: () => setSelectedTodoId(null),
+                  }, t('workbench.detail.backToList')),
+                ),
               ),
               h('p', { className: 'dti-detail-title', style: { marginTop: '13px' } }, todo.title),
               todo.description === '' ? null : h('p', { className: 'dti-detail-description' }, todo.description),
@@ -4559,13 +4574,18 @@ window.__ModuleLoader__.load({
               executionTarget === null
                 ? h(
                     'div',
-                    { className: 'dti-workbench' },
+                    { className: 'dti-workbench' + (selectedTodoId === null ? '' : ' detail-open') },
                     h(
                       'main',
                       { className: 'dti-workbench-main' },
                       renderOverview(),
                       renderToolbar(),
-                      h('h2', { className: 'dti-detail-section-title', style: { marginBottom: '9px' } }, t('workbench.list.title')),
+                      h('h2', {
+                        ref: listHeadingRef,
+                        tabIndex: -1,
+                        className: 'dti-detail-section-title',
+                        style: { marginBottom: '9px' },
+                      }, t('workbench.list.title')),
                       renderList(),
                     ),
                     renderDetailPanel(),
