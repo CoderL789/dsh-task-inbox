@@ -153,10 +153,12 @@ export async function apply(ctx: PluginContext): Promise<void> {
           return undefined
         }
       },
-      workspaceRegistry: ctx.get?.<WorkspaceRegistryLike>('workspaceRegistry'),
-      sessionPersistence: ctx.get?.<SessionPersistenceLike>('sessionPersistence'),
-      sessions: ctx.get?.<LiveSessionsLike>('sessions'),
-      sessionTitle: ctx.get?.<SessionTitleLike>('sessionTitle'),
+      // Resolve lifecycle services at use time: workspaceRegistry and friends
+      // may become active after this plugin's apply() runs.
+      workspaceRegistry: () => ctx.get?.<WorkspaceRegistryLike>('workspaceRegistry'),
+      sessionPersistence: () => ctx.get?.<SessionPersistenceLike>('sessionPersistence'),
+      sessions: () => ctx.get?.<LiveSessionsLike>('sessions'),
+      sessionTitle: () => ctx.get?.<SessionTitleLike>('sessionTitle'),
       clock: {
         isoNow: () => new Date().toISOString(),
         epochMs: () => Date.now(),

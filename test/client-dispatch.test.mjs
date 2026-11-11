@@ -636,3 +636,320 @@ test('unknown recovery is blocked when the Host cannot verify the log', async ()
   assert.equal(result.errorCode, 'prompt_retry_not_authorized')
   assert.equal(callNames(sessions).length, 0)
 })
+
+// ---------------------------------------------------------------------------
+// Task 03B final UI: execution history selection and session field mapping
+// ---------------------------------------------------------------------------
+
+function historyRecord(overrides = {}) {
+  return baseRecord({
+    executionId: 'exec-old',
+    requestId: 'req-old',
+    strategy: 'reuse',
+    status: 'unknown',
+    createdAt: '2026-11-10T10:00:00.000Z',
+    sourceSessionId: 'session-src',
+    targetSessionId: undefined,
+    ...overrides,
+  })
+}
+
+test('multiple unresolved executions can be listed and selected individually', () => {
+  const accepted = historyRecord({
+    executionId: 'exec-accepted',
+    status: 'accepted',
+    createdAt: '2026-11-10T12:00:00.000Z',
+    targetSessionId: 'session-a',
+  })
+  const olderUnknown = historyRecord({
+    executionId: 'exec-old',
+    status: 'unknown',
+    createdAt: '2026-11-10T09:00:00.000Z',
+  })
+  const newerDispatching = historyRecord({
+    executionId: 'exec-new',
+    status: 'dispatching',
+    createdAt: '2026-11-10T11:00:00.000Z',
+  })
+  const records = [accepted, newerDispatching, olderUnknown]
+
+  const unresolved = hooks.unresolvedExecutions(records)
+  assert.deepEqual(
+    unresolved.map((entry) => entry.executionId),
+    ['exec-new', 'exec-old'],
+  )
+  // Latest accepted must not hide an earlier unresolved execution.
+  assert.equal(hooks.defaultHistorySelection(records).executionId, 'exec-new')
+  assert.equal(
+    hooks.defaultHistorySelection(records, 'exec-old').executionId,
+    'exec-old',
+  )
+})
+
+test('selecting execution history is side-effect free and uses that record', async () => {
+  const older = historyRecord({
+    executionId: 'exec-old',
+    requestId: 'req-old',
+    strategy: 'reuse',
+    status: 'dispatching',
+    sourceSessionId: 'session-src',
+  })
+  const newer = historyRecord({
+    executionId: 'exec-new',
+    requestId: 'req-new',
+    status: 'dispatching',
+    sourceSessionId: 'session-src',
+  })
+  const selected = hooks.defaultHistorySelection([newer, older], 'exec-old')
+  assert.equal(selected.executionId, 'exec-old')
+
+  // Selecting alone (the helper) performs no Session operation.
+  const sessions = new FakeSessions()
+  assert.equal(callNames(sessions).length, 0)
+
+  // Recovering the selected record sends its own requestId, not the other one.
+  const host = new FakeHost({
+    record: {
+      ...older,
+      status: 'dispatching',
+      targetSessionId: undefined,
+    },
+  })
+  const result = await hooks.resumeDispatchFlow({ host, sessions }, selected)
+  assert.equal(result.status, 'accepted')
+  assert.equal(callNames(sessions).includes('create'), false)
+  assert.equal(callNames(sessions).includes('fork'), false)
+  const prompt = sessions.calls.find((call) => call[0] === 'prompt')
+  assert.equal(prompt[5], 'req-old')
+})
+
+test('switching Todo resets prior execution selection state', () => {
+  const reset = hooks.emptyExecutionHistory()
+  assert.equal(Array.isArray(reset.records), true)
+  assert.equal(reset.records.length, 0)
+  assert.equal(reset.selectedExecutionId, null)
+})
+
+test('source and target Session fields follow the dispatch strategy', () => {
+  const newFields = hooks.executionSessionFields({
+    strategy: 'new',
+    sourceSessionId: undefined,
+    targetSessionId: 'session-new',
+  })
+  assert.equal(newFields.source, undefined)
+  assert.equal(newFields.target, 'session-new')
+  assert.equal(newFields.shared, false)
+  assert.equal(newFields.targetMissing, false)
+
+  const reuseFields = hooks.executionSessionFields({
+    strategy: 'reuse',
+    sourceSessionId: 'session-reused',
+    targetSessionId: 'session-reused',
+  })
+  assert.equal(reuseFields.shared, true)
+  assert.equal(reuseFields.source, 'session-reused')
+  assert.equal(reuseFields.target, 'session-reused')
+
+  // A reuse pending target equal to its source must never be presented as a
+  // persisted target.
+  const pendingReuse = hooks.executionSessionFields(
+    {
+      strategy: 'reuse',
+      sourceSessionId: 'session-reused',
+      targetSessionId: undefined,
+    },
+    'session-reused',
+  )
+  assert.equal(pendingReuse.target, undefined)
+  assert.equal(pendingReuse.shared, false)
+  assert.equal(pendingReuse.targetMissing, true)
+
+  const forkFields = hooks.executionSessionFields({
+    strategy: 'fork',
+    sourceSessionId: 'session-parent',
+    targetSessionId: 'session-child',
+  })
+  assert.equal(forkFields.source, 'session-parent')
+  assert.equal(forkFields.target, 'session-child')
+  assert.equal(forkFields.shared, false)
+  assert.equal(forkFields.targetMissing, false)
+})
+
+test('short ids distinguish unnamed Sessions and executions', () => {
+  const longSession = 'session-f46e6b1f-b4c5-4eb7-85d9-769ed39f1f41'
+  const short = hooks.shortSessionId(longSession)
+  assert.equal(short, 'f46e6b1f')
+  assert.equal(hooks.sessionShortCode(longSession, 12), 'f46e6b1f-b4c')
+  assert.equal(hooks.shortExecutionId('19734deb-0cca-44cc-98e2-b345d024b4ff').endsWith('…'), true)
+})
+
+// ---------------------------------------------------------------------------
+// Task 03B lifecycle/capability gate and Session labels (0.4.5)
+// ---------------------------------------------------------------------------
+
+function sessionFixture(overrides = {}) {
+  return {
+    sessionId: 'session-f46e6b1f-b4c5-4eb7-85d9-769ed39f1f41',
+    workspaceId: 'ws-a',
+    title: undefined,
+    createdAt: 1_700_000_000_000,
+    live: false,
+    stored: true,
+    blankState: 'non-blank',
+    suitableForReuse: true,
+    suitableForFork: true,
+    unavailableReasons: [],
+    warnings: [],
+    ...overrides,
+  }
+}
+
+const testTranslate = (key) =>
+  ({
+    'execution.titleUnknown': '未命名会话',
+    'execution.session.blank': '空白',
+    'execution.session.stateUnknown': '状态未知',
+    'execution.session.notFound': '未找到',
+    'execution.session.live': '活跃',
+  })[key] ?? key
+
+test('unnamed Sessions are distinguishable by short id and status suffix', () => {
+  const first = sessionFixture()
+  const second = sessionFixture({
+    sessionId: 'session-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+  })
+  const firstLabel = hooks.sessionDisplayLabel(testTranslate, first)
+  const secondLabel = hooks.sessionDisplayLabel(testTranslate, second)
+  assert.equal(firstLabel, '未命名会话 · f46e6b1f')
+  assert.equal(secondLabel, '未命名会话 · aaaaaaaa')
+  assert.notEqual(firstLabel, secondLabel)
+})
+
+test('named and blank Sessions keep title/status and always include a short id', () => {
+  const named = hooks.sessionDisplayLabel(testTranslate, sessionFixture({ title: 'My Session' }))
+  assert.equal(named, 'My Session · f46e6b1f')
+
+  const blank = hooks.sessionDisplayLabel(
+    testTranslate,
+    sessionFixture({
+      sessionId: 'session-bbbbbbbb-1111-2222-3333-444444444444',
+      blankState: 'blank',
+    }),
+  )
+  assert.equal(blank, '未命名会话 (空白) · bbbbbbbb')
+
+  const unknown = hooks.sessionDisplayLabel(
+    testTranslate,
+    sessionFixture({
+      sessionId: 'session-cccccccc-1111-2222-3333-444444444444',
+      blankState: 'unknown',
+    }),
+  )
+  assert.equal(unknown, '未命名会话 (状态未知) · cccccccc')
+})
+
+test('session short ids extend when their default 8 characters collide', () => {
+  const sessions = [
+    sessionFixture({ sessionId: 'session-aaaaaaaa-1' }),
+    sessionFixture({ sessionId: 'session-aaaaaaaa-2' }),
+  ]
+  const length = hooks.sessionLabelIdLength(sessions)
+  assert.equal(length > 8, true)
+  const labels = sessions.map((session) => hooks.sessionDisplayLabel(testTranslate, session, length))
+  assert.notEqual(labels[0], labels[1])
+  assert.equal(new Set(labels).size, 2)
+})
+
+test('duplicate Session ids are shown only once', () => {
+  const session = sessionFixture()
+  const deduped = hooks.dedupeExecutionSessions([session, { ...session }, sessionFixture({
+    sessionId: 'session-other',
+  })])
+  assert.equal(deduped.length, 2)
+  assert.equal(deduped[0].sessionId, session.sessionId)
+  assert.equal(deduped[1].sessionId, 'session-other')
+})
+
+test('canConfirmDispatch requires loaded history, capability, workspace and no conflict', () => {
+  const base = {
+    dispatchBusy: false,
+    sessionApiAvailable: true,
+    historyPhase: 'loaded',
+    dispatchReady: true,
+    capabilityChecking: false,
+    workspaceReady: true,
+    hasUnresolvedExecution: false,
+    hasCurrentExecution: false,
+  }
+  assert.equal(hooks.canConfirmDispatch(base), true)
+  assert.equal(hooks.canConfirmDispatch({ ...base, historyPhase: 'loading' }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, historyPhase: 'error' }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, dispatchReady: false }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, capabilityChecking: true }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, sessionApiAvailable: false }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, workspaceReady: false }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, hasUnresolvedExecution: true }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, hasCurrentExecution: true }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, dispatchBusy: true }), false)
+})
+
+test('canDispatchSelected gates continue/recover actions on current capability', () => {
+  const base = {
+    dispatchBusy: false,
+    sessionApiAvailable: true,
+    historyPhase: 'loaded',
+    dispatchReady: true,
+    capabilityChecking: false,
+    hasSelectedExecution: true,
+  }
+  assert.equal(hooks.canDispatchSelected(base), true)
+  assert.equal(hooks.canDispatchSelected({ ...base, dispatchReady: false }), false)
+  assert.equal(hooks.canDispatchSelected({ ...base, historyPhase: 'error' }), false)
+  assert.equal(hooks.canDispatchSelected({ ...base, hasSelectedExecution: false }), false)
+})
+
+test('execution_unavailable marks capability unconfirmed until it is re-checked', () => {
+  const base = {
+    dispatchBusy: false,
+    sessionApiAvailable: true,
+    historyPhase: 'loaded',
+    dispatchReady: true,
+    capabilityChecking: false,
+    workspaceReady: true,
+    hasUnresolvedExecution: false,
+    hasCurrentExecution: false,
+  }
+  assert.equal(hooks.canConfirmDispatch(base), true)
+  const unavailable = { ...base, dispatchReady: false }
+  assert.equal(hooks.canConfirmDispatch(unavailable), false)
+  const rechecked = { ...unavailable, dispatchReady: true }
+  assert.equal(hooks.canConfirmDispatch(rechecked), true)
+})
+
+test('concurrent reuse recovery clicks never create/fork and reuse one requestId', async () => {
+  const source = 'session-src'
+  const host = new FakeHost({
+    record: baseRecord({
+      strategy: 'reuse',
+      status: 'dispatching',
+      sourceSessionId: source,
+    }),
+  })
+  const sessions = new FakeSessions()
+  const selected = baseRecord({
+    strategy: 'reuse',
+    status: 'dispatching',
+    sourceSessionId: source,
+  })
+
+  const results = await Promise.all([
+    hooks.resumeDispatchFlow({ host, sessions }, selected),
+    hooks.resumeDispatchFlow({ host, sessions }, selected),
+  ])
+  assert.equal(callNames(sessions).includes('create'), false)
+  assert.equal(callNames(sessions).includes('fork'), false)
+  const prompts = sessions.calls.filter((call) => call[0] === 'prompt')
+  assert.equal(prompts.length >= 1, true)
+  for (const prompt of prompts) assert.equal(prompt[5], 'req-1')
+  assert.equal(results.some((entry) => entry.status === 'accepted'), true)
+})

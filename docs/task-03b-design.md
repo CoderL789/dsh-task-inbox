@@ -1,6 +1,22 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成并已实现（2026-11-10，版本 0.4.3 完成第三轮审查修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1/§0.2/§0.3 记录实现与修复差异。
+> 状态：**架构验证完成并已实现（2026-11-11，版本 0.4.5 完成初始化依赖与能力门禁修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1–§0.6 记录实现与修复差异。
+
+## 0.6 初始化依赖与能力门禁修复（0.4.5）
+
+- **惰性依赖**：Host `ExecutionService` 不再在 apply 阶段捕获 optional 服务；workspaceRegistry/sessionPersistence/sessions/sessionTitle 改为 provider，每次使用解析，缺失/异常安全返回 `execution_unavailable`。
+- **能力探测**：新增 `execution-capability`，按策略/Workspace 检查 workspace registry、session persistence、workspace 存在与目录可用性；Host 写操作仍独立校验，Client 的 dispatchReady 不参与 Host 授权。
+- **Client 门禁**：历史 loading/loaded/error 三态；只有历史成功、能力 ready、Session API 可用、Workspace 可用、无未解决执行/当前执行、非 busy/checking 时才允许确认派发；继续/恢复/Prompt 重试受 `canDispatchSelected` 约束；execution_unavailable 后必须重新检查。
+- **空状态/标签**：正常空历史显示「暂无未解决执行」；错误与空状态区分；Session 标签始终含可区分短 ID（默认 8 位，冲突延长），下拉框按完整 ID 去重。
+- 测试 164/164（延迟依赖、能力探测、API 能力、门禁、空状态、标签碰撞/去重、既有状态机回归）。
+
+## 0.5 最终 UI 收尾（0.4.4）
+
+- **历史未解决执行**：配置页加载当前 Todo 全部 Execution，客户端筛选 prepared/session_ready/dispatching/unknown；默认选择最新未解决，最新 accepted 不隐藏更早记录。列表显示短 executionId、策略、状态、创建时间、来源/目标 Session；选择无副作用，恢复使用所选记录原 executionId/requestId/sourceSessionId/Prompt 快照，不重新生成 intent。
+- **复用安全恢复**：reuse 且 targetSessionId 缺失时提供「恢复绑定并继续派发」，二次确认提示“可能发送未接收 Prompt，但不会创建新会话”；调用 `execution-reuse-recover`，accepted 直接结束、日志不可读保持 unknown、session_ready 用原 requestId 继续；不 create/fork。
+- **来源/目标 Session**：执行详情按策略展示；new 仅目标，reuse 持久化 target 等于 source 时合并，fork 分别展示；target 缺失显示“尚未保存”；未命名 Session 用短 ID/创建时间。
+- 历史加载失败显示错误/重试；恢复期间按钮禁用并增加 UI single-flight 锁。
+- 测试 154/154（历史选择、latest accepted + 较早 unknown、无副作用、各自 requestId、reuse recovery、字段映射、切换 Todo、并发恢复）。
 
 ## 0.4 第三轮代码审查修复（0.4.3）
 

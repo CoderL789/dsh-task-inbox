@@ -161,6 +161,15 @@ test('parseApiPayload validates execution operations', () => {
   assert.equal(parseApiPayload({ op: 'execution-prompt-retry' }).ok, false)
   assert.equal(parseApiPayload({ op: 'execution-reuse-recover', executionId: 'exec-1' }).ok, true)
   assert.equal(parseApiPayload({ op: 'execution-reuse-recover' }).ok, false)
+  assert.equal(parseApiPayload({ op: 'execution-capability' }).ok, true)
+  assert.equal(
+    parseApiPayload({ op: 'execution-capability', strategy: 'fork', workspaceId: 'ws-a' }).ok,
+    true,
+  )
+  assert.equal(
+    parseApiPayload({ op: 'execution-capability', strategy: 'nope' }).ok,
+    false,
+  )
 })
 
 test('execution operations are unavailable without the execution service', async () => {
@@ -236,6 +245,15 @@ test('execution operations map service results and service errors', async () => 
       calls.push(['recoverReuseExecution', id])
       return { execution: { executionId: id, status: 'session_ready' }, recovered: true }
     },
+    async dispatchAvailability(input) {
+      calls.push(['dispatchAvailability', input])
+      return {
+        ready: input.workspaceId === 'ws-a',
+        ...(input.workspaceId === 'ws-a' ? {} : { reason: 'workspace missing' }),
+        missing: input.workspaceId === 'ws-a' ? [] : ['workspace'],
+        warnings: [],
+      }
+    },
   }
 
   const intent = await handleOperation(
@@ -308,6 +326,24 @@ test('execution operations map service results and service errors', async () => 
     executionService,
   )
   assert.equal(recovered.body.data.recovered, true)
+
+  const capability = await handleOperation(
+    service,
+    { op: 'execution-capability', strategy: 'new', workspaceId: 'ws-a' },
+    undefined,
+    executionService,
+  )
+  assert.equal(capability.body.data.dispatchReady, true)
+  assert.deepEqual(capability.body.data.dispatchMissing, [])
+
+  const unavailable = await handleOperation(
+    service,
+    { op: 'execution-capability', strategy: 'reuse', workspaceId: 'missing' },
+    undefined,
+    executionService,
+  )
+  assert.equal(unavailable.body.data.dispatchReady, false)
+  assert.equal(unavailable.body.data.dispatchReason, 'workspace missing')
 
   const failing = {
     async createIntent() {

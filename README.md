@@ -12,7 +12,7 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 执行后由插件记录执行结果。待办因此可以跨会话、跨上下文、跨重启地存活。
 
-> Task 03A 已通过验收；**Task 03B（真实 Agent 派发）实现完成，并已修复三轮代码审查发现的异常恢复/幂等/并发执行权/会话复用问题（版本 0.4.3，待复审）**。每条待办可配置执行上下文并「确认并派发」：Client 经 DSH 正常 Remote 授权链路创建/复用/Fork Session 并发送 Prompt，Host 负责派发前重新校验、执行意图/关联持久化、接受结果独立核验与异常恢复。开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由用户在 GUI 中确认触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)与[已知限制](#已知限制)。
+> Task 03A 已通过验收；**Task 03B（真实 Agent 派发）实现完成，并已修复三轮代码审查问题并完成最终 UI 收尾，并修复生命周期依赖注入、派发能力门禁、历史空状态与 Session 标签问题（版本 0.4.5，待复审）**。每条待办可配置执行上下文并「确认并派发」：Client 经 DSH 正常 Remote 授权链路创建/复用/Fork Session 并发送 Prompt，Host 负责派发前重新校验、执行意图/关联持久化、接受结果独立核验与异常恢复。开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由用户在 GUI 中确认触发。详见[当前阶段与功能矩阵](#当前阶段与功能矩阵)、[Task 03B 设计稿](docs/task-03b-design.md)与[已知限制](#已知限制)。
 
 ## 为什么需要待办箱
 
@@ -34,11 +34,11 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 
 当前为 **Task 03B：真实 Agent 派发**（实现完成，待用户验收）。已具备：
 
-- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.3`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
+- 独立插件包（包名 `dsh-task-inbox`，版本 `0.4.5`）：bundle patch + Host/Client 双层 TypeScript 源码，构建输出 JS；
 - **Host 半区**：Todo 存储域 `task_inbox` 保持 v2 不变、**不迁移/不重写**；新增独立执行记录域 `task_inbox_executions`（v1、JSON 单文件），用于执行意图/关联/状态持久化。Host 通过受认证 HTTP 端点 `POST /plugins/dsh-task-inbox/api` 提供 Todo CRUD、只读 `execution-context`、`execution-intent` / `execution-session` / `execution-dispatching` / `execution-result` / `execution-status` / `execution-candidates` / `execution-bind` 等协调操作；派发前用 public Host 服务重新校验 Todo/Workspace/Session，并**只读扫描 Session 日志中的 requestId（user/message source.rpcId）独立核验接受结果**；
 - **Client 半区**：侧边栏「Task Inbox」/「待办箱」入口 + 独立页面；Todo CRUD；执行前配置（工作区 / 策略 / 来源会话 / 摘要 / 校验）；「确认并派发」通过 `ctx.sessions.create/fork`（正常 Remote 授权链路）+ `ctx.sessions.retain` + `SessionFace.prompt(..., requestId)` 完成新建/复用/Fork 派发；派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、候选会话人工核对/绑定与安全继续；中英文与明暗主题适配；
 - 数据模型：Todo 字段不变；执行记录包含 `executionId`、稳定的 `requestId`、`clientRequestId`、Todo 快照、策略、Workspace 快照、来源/目标 Session、状态（prepared/session_ready/dispatching/accepted/failed/unknown）、错误码与时间戳；
-- 148 个 Node 测试覆盖 Todo/存储/迁移/HTTP、执行上下文与空白三态、派发前置校验、Host 执行意图/状态机并发/恢复/核验/放弃/候选绑定/执行权租约/Prompt 重试授权，以及 Client 派发编排（mock `ctx.sessions`）的成功、失败、网络歧义、回执丢失、刷新恢复、并发抢权与 unknown 恢复路径。
+- 164 个 Node 测试覆盖 Todo/存储/迁移/HTTP、执行上下文与空白三态、派发前置校验、Host 执行意图/状态机并发/恢复/核验/放弃/候选绑定/执行权租约/Prompt 重试授权，以及 Client 派发编排（mock `ctx.sessions`）的成功、失败、网络歧义、回执丢失、刷新恢复、并发抢权与 unknown 恢复路径。
 
 | 能力 | 当前 | 后续 |
 | --- | --- | --- |
@@ -53,7 +53,11 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 | 工作区选择（真实绑定） | ✅ 派发时写入执行记录 | — |
 | 会话策略：新建 / 复用 / Fork（真实创建/恢复） | ✅ Task 03B（Client 授权 Remote） | — |
 | 执行派发与 Agent 执行 | ✅ 已实现（接受确认 + 独立核验；三轮审查修复完成；未真实测试） | — |
-| 执行状态、历史与结果关联 | 🟡 仅安全派发状态；完整状态机/历史 | Task 04 |
+| 执行状态、历史与结果关联 | 🟡 未解决执行选择/恢复入口；完整状态机/历史 | Task 04 |
+| 历史未解决执行选择与恢复 | ✅ 最终 UI 收尾（按 Execution 各自的 ID/requestId/快照） | — |
+| 历史空状态 / 派发能力门禁 | ✅ 0.4.5（加载失败不误显示为空；能力不可用禁用派发） | — |
+| Session 标签区分（短 ID） | ✅ 0.4.5（标题/未命名/空白/状态未知均含可区分短 ID） | — |
+| 来源会话 / 目标会话区分展示 | ✅ 新建仅目标；复用可合并；Fork 分别展示 | — |
 | 「标记完成」 | ❌（本阶段有意不做） | Task 04 随执行状态设计 |
 | 自动化 UI 测试 | ❌ | Task 05 评估 |
 
@@ -70,8 +74,12 @@ DSH Task Inbox 让你把想做的事先记下来，而不是立刻塞进某个�
 7. 点击待办行上的「执行」图标打开执行前配置：选择工作区、会话策略（新建 / 复用 / Fork）与来源会话，查看摘要与校验提示；
 8. 点击「确认并派发」后：Host 先重新校验并保存执行意图（同一 Todo 若已有未解决执行会被服务端拒绝）；Client 通过 DSH 正常 Remote 授权链路创建/复用/Fork Session（新建使用实际返回的 Session ID；Fork 默认 `allowMigration:false`），先持久化目标 Session 再以同一 `requestId` 通过 `SessionFace.prompt(..., 'queue')` 发送任务；Host 再从 Session 日志独立核验是否被接受；
 9. 结果未确认时（unknown / dispatching / session_ready / prepared）**不会直接允许重新创建/Fork**：界面优先提供「检查状态」「继续派发」「核对候选会话/绑定」「恢复已有执行」；若要发起全新执行，必须先显式「放弃此执行」（二次确认；已创建的会话不会被删除）；
-10. Prompt 已被 DSH 接受但 Host 结果写入失败时，记录保持 `dispatching` 并保留 executionId/requestId/目标 Session，稍后可通过「检查状态」按日志核验，不会重新创建会话；
-11. 开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发需由你明确点击确认触发。
+10. 执行配置页的「历史未解决执行」区域会列出当前 Todo 的全部 prepared / session_ready / dispatching / unknown 执行（即使最新一条已 accepted 也不会隐藏较早的未解决记录）。选择一条只查看/恢复，不会自动创建、Fork 或发送；复用记录若 targetSessionId 缺失，可用「恢复绑定并继续派发」并在二次确认后恢复原来源 Session（不会创建新会话）；
+11. 执行详情区分「来源会话」与「目标会话」：新建仅显示目标；复用时可合并展示来源/目标；Fork 分别显示来源与目标；未命名会话优先显示短 Session ID/创建时间；
+12. 执行配置页始终显示历史区域状态：加载中、加载失败（可重试）或「暂无未解决执行」；Host 派发能力不可用时显示具体原因并禁用派发，重新检查成功后才可继续；
+13. 来源会话下拉框每个选项都带可区分短 Session ID（默认 8 位，冲突时自动延长），并按完整 Session ID 去重；不会因名称相同合并不同会话；
+14. Prompt 已被 DSH 接受但 Host 结果写入失败时，记录保持 `dispatching` 并保留 executionId/requestId/目标 Session，稍后可通过「检查状态」按日志核验，不会重新创建会话；
+15. 开发 Agent 未对真实 Workspace/Session 发起过测试执行；首次真实派发及恢复验收需由你明确点击确认触发。
 
 ## 数据、备份与卸载
 
@@ -182,6 +190,9 @@ dsh-task-inbox/
 - **派发可见性**：「accepted」仅表示 DSH 已接收 Prompt，不代表执行完成；完整执行状态机与历史属于 Task 04；
 - **Client 契约风险**：派发依赖随版本发布的 Client `ctx.sessions.create/fork` 与 `SessionFace.prompt`（not Inspect 方法目录中的 `create/list`，但由 `ISessions` 类型与构建实现提供），非文档化第三方 API；升级 DSH 后需回归；
 - **会话限制**：Host 使用的 public API 无法确认 archive 状态与「已完成轮次」，由真实 Remote prompt 的 Host 规则最终裁决；Fork 默认不迁移（`allowMigration:false`），需要迁移时必须由用户显式授权（当前 UI 未提供迁移选项）；
+- **生命周期依赖**：`ExecutionService` 不再在插件 apply 阶段永久捕获 `workspaceRegistry/sessionPersistence/sessions/sessionTitle`，每次使用惰性解析；服务未就绪时返回 `execution_unavailable`，不会静默降级；
+- **派发门禁**：`execution-status` 加载状态分 loading/loaded/error；`execution-capability` 按 Workspace/策略返回 `dispatchReady` 与原因；Client 在历史加载失败、能力不可用、存在未解决执行、Session API 缺失或派发进行中时禁止「确认并派发」以及继续/恢复/Prompt 重试入口；Host 写操作仍独立校验，不信任 Client 的 ready 标记；
+- **Session 标签**：所有候选都有短 Session ID；同名前缀/未命名不再混淆；下拉框按完整 ID 去重；
 - **幂等边界**：新建/Fork 没有 DSH 侧幂等键；Host 用 `execution-acquire` 在串行化 mutation 内切换 prepared→dispatching 并发放**执行权租约**（token + 过期时间）；只有 `acquired: true` 的 Client 才能调用 create/fork，其他并发/重试调用只能读取状态；租约不会重新发放，重启/超时后只能走 unknown/恢复。同一 `clientRequestId` 必须 todoId/workspaceId/strategy/sourceSessionId 完全一致才返回原记录，否则 `execution_conflict`；
 - **Prompt 重试授权**：unknown + target 不会当作 session_ready 直接重发；Client 先刷新 Host 状态，Host 只读日志核验 accepted（已接受则不再发送）；日志不可读或扫描超限时不授权重试、保持 unknown；只有明确 not-found 才按同一 executionId/targetSessionId/requestId/不可变 Prompt 快照授权一次安全重试，且永不 create/fork；
 - **会话复用**：一个 Session 可以关联多条 execution（每条独立 requestId）；不同 Todo、同一 Todo 在 accepted 后均可明确发起新的「复用」执行。新建/Fork 的目标 Session 仍受防冒领保护（不能被其他创建操作绑定）。
@@ -197,7 +208,7 @@ dsh-task-inbox/
 - 冷会话无标题（显示占位标题 + 短 ID），归档状态在预览阶段不可确认；
 - 没有跨标签页 / 多窗口实时同步；整表重写与多进程写同一存储域的限制沿用 Task 02；
 - 写入结果不确定且自动重新加载存储域失败时进入保护态，需重启/重载 DSH（磁盘数据不会被删除或重置）；
-- 暂无自动化 UI 测试；真实派发、刷新/重启恢复、明暗主题需人工验收。
+- 暂无自动化 UI 测试；真实派发、历史未解决执行选择/恢复、刷新/重启恢复、明暗主题需人工验收。
 
 ## 贡献
 

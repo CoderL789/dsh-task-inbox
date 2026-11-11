@@ -16,7 +16,7 @@
 | Task 01 | 最小可运行独立插件 | **完成（已通过验收）** | 插件可被 DSH 安装加载，侧边栏入口与独立空状态页可用；文档与项目骨架就位 |
 | Task 02 | 待办数据模型与持久化 + CRUD 界面 | **完成（已通过验收）** | 待办归属于插件、跨会话与重启存活，并提供完整增删改查界面 |
 | Task 03A | 执行前配置与会话能力验证（仅预览） | **完成（已通过验收）** | 选择工作区 / 会话策略 / 来源会话并校验配置；不创建会话、不派发 |
-| Task 03B | 执行派发（新建 / 复用 / Fork） | **第三轮审查修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
+| Task 03B | 执行派发（新建 / 复用 / Fork） | **初始化/门禁修复完成（待复审）** | 按三种策略把 Todo 派发给 Agent，并持久化执行关联 |
 | Task 04 | 执行追踪 | 待开始 | 记录执行状态、历史与结果关联，支持回溯与异常处理 |
 | Task 05 | 打磨与开源发布准备 | 待开始 | 国际化、可访问性、打包与开源发布就绪 |
 
@@ -142,7 +142,24 @@
 
 ## Task 03B：执行派发
 
-**状态：第三轮代码审查修复完成（版本 0.4.3，待复审；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+**状态：生命周期依赖/能力门禁修复完成（版本 0.4.5，待复审/人工验收；开发 Agent 未对真实 Workspace/Session 发起测试执行）**
+
+**0.4.5 初始化与门禁修复（2026-11-11）**：
+
+- **Host 依赖惰性解析**：`ExecutionService` 不再在 apply 阶段捕获 `workspaceRegistry/sessionPersistence/sessions/sessionTitle` 的早期 `undefined`，改为每次使用时调用 provider；缺失时明确返回 `execution_unavailable`。修复重启后「工作区/派发不可用」的初始化时序竞争。
+- **派发能力探测**：新增 `execution-capability`，按当前策略与 Workspace 检查实际依赖（workspace registry、session persistence、workspace 存在/可用），返回 `dispatchReady`、`dispatchReason`、missing/warnings；Host 写操作仍独立校验，不信任 Client ready 标记。
+- **Client 安全门禁**：执行历史状态区分 loading/loaded/error；统一 `canConfirmDispatch` / `canDispatchSelected` 门禁；历史未加载/失败、能力不可用、存在未解决执行、Session API 缺失或派发进行中时禁止确认、继续、恢复、Prompt 重试；收到 `execution_unavailable` 后能力标记未确认，必须重新检查状态。
+- **历史空状态**：正常空历史显示「暂无未解决执行」；加载中/失败/能力不可用分别显示对应提示，不再用 `return null` 隐藏；加载失败提供重新检查入口。
+- **Session 标签**：标题/未命名/空白/状态未知均附带可区分短 Session ID（默认 8 位，冲突自动延长）；下拉框按完整 Session ID 去重，保留空状态/活跃/未找到提示。
+- 测试增至 **164/164**：延迟激活依赖、能力探测、API 能力响应、empty/loading/error 门禁、Session 标签碰撞/去重、既有状态机/幂等回归。
+
+**最终 UI 收尾（2026-11-11）**：
+
+- 执行配置页新增「历史未解决执行」区域：加载当前 Todo 的全部 Execution，筛选 prepared/session_ready/dispatching/unknown；展示短 Execution ID、策略、状态、创建时间、来源/目标 Session；默认选择最新未解决执行，即使最新一条已 accepted 也能找到更早的未解决记录。选择仅展示/恢复，不自动 create/fork/prompt；切换 Todo 清空选择。
+- reuse 历史记录 targetSessionId 缺失时提供「恢复绑定并继续派发」：二次确认提示可能发送未接收 Prompt 但不会创建新会话；恢复使用该 Execution 原有 executionId/requestId/sourceSessionId/Prompt 快照，调用 `execution-reuse-recover`，先日志核验；已有 accepted 直接恢复、不重发；日志不可读保持 unknown；不 create/fork。
+- 执行详情区分「来源会话」与「目标会话」：新建仅目标；复用来源与目标相同时合并、target 未保存时明确显示；Fork 分别展示；未命名 Session 回退短 ID/创建时间。
+- 加载历史失败显示错误并提供重试（不误显示空列表）；恢复期间按钮禁用并增加同步 single-flight 锁，防止重复点击重复派发。
+- 测试增至 **154/154**：多未解决执行选择、最新 accepted 不隐藏较早 unknown、选择无副作用、不同记录使用各自 requestId、reuse 恢复不 create/fork、来源/目标映射、清空选择、并发恢复不重复创建等。
 
 **第三轮审查修复（2026-11-10）**：
 
@@ -177,7 +194,7 @@
 - Host 独立核验：只读扫描目标 Session 日志中 `user/message` 的 `source.rpcId === requestId`；Client 报告的 accepted 未通过核验时保持 `dispatching`，不直接标记 accepted；
 - Fork 未知结果：不自动重试；Host 列出 intent 之后、同 Workspace、未被绑定的候选会话，由用户手动绑定后继续；
 - UI：真实「确认并派发」、派发中禁用、accepted/failed/unknown/session_ready 反馈、打开目标会话、检查状态、继续派发、候选核对/绑定、未命名会话短 ID/时间显示、中英文与明暗主题；
-- 测试：148/148（Host 意图/校验/状态机并发/执行权租约/日志核验/恢复/放弃/复用共享与恢复 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失/刷新恢复/并发抢权/unknown Prompt 恢复等路径）。
+- 测试：164/164（Host 意图/校验/状态机并发/执行权租约/日志核验/恢复/放弃/复用共享与恢复/生命周期依赖/能力探测 + Client 编排 mock `ctx.sessions` 的成功/失败/断连/回执丢失/刷新恢复/并发抢权/unknown Prompt 恢复/历史选择与来源目标映射/门禁/标签等路径）。
 
 **已知限制**：archive/已完成轮次无法由 public Host API 预检（由 Remote prompt 最终裁决）；Fork 无幂等键；Client `sessions.create/list` 属随版本发布契约；真实 GUI 派发/刷新恢复尚未人工验收。
 
@@ -316,6 +333,8 @@
 | 2026-11-10 | Task 03B 第一轮审查修复（0.4.1）：未解决执行防重/显式放弃、保守异常分类、Host 回执失败待核验、状态机临界区与 accepted 保护、中断宽限、目标绑定复核；129/129 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 第二轮审查修复（0.4.2）：非幂等 create/fork 独占执行权租约、clientRequestId 完整参数幂等比较、unknown 安全 Prompt 重试授权；139/139 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 第三轮审查修复（0.4.3）：复用共享 Session、reuse 失败恢复、旧 dispatching 接口收紧、Prompt 重试严格按日志结果授权；148/148 测试通过 | 已完成 |
+| 2026-11-11 | Task 03B 最终 UI 收尾（0.4.4）：历史未解决执行选择/恢复、reuse 恢复二次确认、来源/目标 Session 展示、UI single-flight；154/154 测试通过 | 已完成 |
+| 2026-11-11 | Task 03B 初始化与门禁修复（0.4.5）：Host 依赖惰性解析、execution-capability 能力探测、Client 统一派发门禁、历史空状态、Session 短 ID/去重；164/164 测试通过 | 已完成 |
 | 2026-11-10 | Task 03B 真实 GUI 派发、刷新/重启恢复、三策略与中英文/明暗主题人工验收 | 待完成（由用户明确确认后触发） |
 | 2026-11-10 | 等待用户确认 Task 03B 实现方案 | 待完成 |
 

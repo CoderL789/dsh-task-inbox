@@ -55,6 +55,7 @@ export type ApiOperation =
   | { op: 'execution-reuse-recover'; executionId: string }
   | { op: 'execution-result'; executionId: string; outcome: 'accepted' | 'failed' | 'unknown'; errorCode?: string }
   | { op: 'execution-status'; executionId?: string; todoId?: string }
+  | { op: 'execution-capability'; strategy?: 'new' | 'reuse' | 'fork'; workspaceId?: string }
   | { op: 'execution-candidates'; executionId: string }
   | { op: 'execution-bind'; executionId: string; sessionId: string }
   | { op: 'execution-unknown'; executionId: string; errorCode?: string }
@@ -190,6 +191,26 @@ export function parseApiPayload(payload: unknown): ParseResult {
           op,
           ...(executionId === undefined ? {} : { executionId }),
           ...(todoId === undefined ? {} : { todoId }),
+        },
+      }
+    }
+    case 'execution-capability': {
+      const strategy = payload.strategy
+      if (
+        strategy !== undefined &&
+        strategy !== 'new' &&
+        strategy !== 'reuse' &&
+        strategy !== 'fork'
+      ) {
+        return { ok: false, code: 'invalid_payload', message: 'Invalid execution strategy.' }
+      }
+      const workspaceId = readOptionalStringField(payload, 'workspaceId')
+      return {
+        ok: true,
+        operation: {
+          op,
+          ...(strategy === undefined ? {} : { strategy }),
+          ...(workspaceId === undefined ? {} : { workspaceId }),
         },
       }
     }
@@ -381,6 +402,34 @@ export async function handleOperation(
           return success({ execution: await executionService.getStatus(operation.executionId) })
         }
         return success({ executions: executionService.listForTodo(operation.todoId as string) })
+      }
+      case 'execution-capability': {
+        if (executionService === undefined) {
+          return success({
+            dispatchReady: false,
+            dispatchReason: 'Execution dispatch is not available in this profile.',
+            dispatchMissing: ['execution_service'],
+            dispatchWarnings: [],
+          })
+        }
+        if (typeof executionService.dispatchAvailability !== 'function') {
+          return success({
+            dispatchReady: false,
+            dispatchReason: 'Execution capability probing is not available.',
+            dispatchMissing: ['execution_service'],
+            dispatchWarnings: [],
+          })
+        }
+        const availability = await executionService.dispatchAvailability({
+          ...(operation.strategy === undefined ? {} : { strategy: operation.strategy }),
+          ...(operation.workspaceId === undefined ? {} : { workspaceId: operation.workspaceId }),
+        })
+        return success({
+          dispatchReady: availability.ready,
+          ...(availability.reason === undefined ? {} : { dispatchReason: availability.reason }),
+          dispatchMissing: availability.missing,
+          dispatchWarnings: availability.warnings,
+        })
       }
       case 'execution-candidates': {
         if (executionService === undefined) {

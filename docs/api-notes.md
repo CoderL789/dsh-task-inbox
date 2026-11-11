@@ -725,3 +725,21 @@ Task 01 页面仅使用 `bg-base`、`bg-layer-1/2`、`border-l1`、`label-primar
 - **旧接口收紧**：`execution-dispatching` 仅接受 `session_ready → dispatching`，prepared 必须经 `execution-acquire`；旧 Client 无法绕过独占执行权；现有 prepared 执行仍可通过 acquire 恢复。
 - **Prompt 重试收紧**：`authorizePromptRetry` 在日志 accepted 时只升级；日志 unknown（不可读/20k 扫描上限）时不授权并保持 unknown；仅日志明确 not-found 时依据 DSH requestId 幂等授权一次重试，始终不 create/fork。
 - **测试**：148/148；新增“新建 accepted → 另一 Todo 复用同一 Session → accepted”、同 Todo accepted 后新执行、reuse 关联失败恢复、旧接口绕过拒绝、日志不可读/扫描上限禁止授权等。
+
+### 9. 最终 UI 收尾（2026-11-11，版本 0.4.4）
+
+- 执行配置页新增「历史未解决执行」：`execution-status?todoId` 返回全部记录，UI 在客户端筛选 unresolved，默认选择最新未解决；最新 accepted 不隐藏更早 unresolved。选择仅改本地状态，不调用任何 Session API。
+- 每条历史显示短 executionId、策略、状态、创建时间、来源/目标 Session；选中记录驱动恢复按钮，恢复使用该记录原 executionId/requestId/sourceSessionId/Prompt 快照，不重新生成 intent。
+- reuse 且 targetSessionId 缺失时按钮为「恢复绑定并继续派发」，二次确认提示“可能发送尚未接收的 Prompt，但不会创建新会话”；调用 `execution-reuse-recover` 后按结果 accepted 直接结束 / session_ready 同 requestId 继续 / unknown 停止。
+- 执行详情按策略展示来源会话与目标会话：new 仅目标；reuse 持久化 target 等于 source 时合并；fork 分别显示；target 缺失显示“尚未保存”；未命名 Session 用短 ID/创建时间，避免同名混淆。
+- 历史加载失败显示错误和重试；选择/恢复期间按钮禁用；增加组件级 single-flight 锁防重复点击。
+- 测试：154/154；新增历史选择、latest accepted + 较早 unknown、无副作用选择、不同记录 requestId、reuse recovery 不 create/fork、session 字段映射、切换 Todo 清空、并发恢复不重复创建。
+
+### 10. 初始化依赖与能力门禁修复（2026-11-11，版本 0.4.5）
+
+- **问题**：`ExecutionService` 在 Host plugin `apply()` 时用 `ctx.get(...)` 捕获 optional 服务；`workspaceRegistry` 启动等待 sessionPersistence/bootstrap，可能尚未 active，结果 `options.workspaceRegistry` 永久为 `undefined`。`execution-status` 不依赖 workspace 仍成功返回空列表，`execution-intent` 则抛 `execution_unavailable`，UI 表现为「执行配置暂不可用」且确认按钮仍可点击。
+- **Host 修复**：`ExecutionServiceOptions` 的 workspaceRegistry/sessionPersistence/sessions/sessionTitle 改为 provider（惰性 getter），每次使用时解析；缺失/抛错时按 `execution_unavailable` 安全拒绝，不缓存早期 undefined。
+- **能力探测**：新增 `execution-capability`，按 strategy/workspace 检查 workspace registry、session persistence、workspace 存在与目录可用性，返回 `dispatchReady`、`dispatchReason`、`dispatchMissing`、`dispatchWarnings`；Host 关键写操作继续独立校验。
+- **Client 门禁**：历史状态区分 loading/loaded/error；`canConfirmDispatch` 要求历史 loaded、dispatchReady、Session API 可用、Workspace 可用、无未解决执行、无当前执行、非 busy/checking；`canDispatchSelected` 约束继续/恢复/Prompt 重试；`execution_unavailable` 后标记能力未确认并要求重新检查。空历史显示「暂无未解决执行」，加载失败显示错误与重试，能力不可用显示具体原因。
+- **Session 标签**：Client `sessionDisplayLabel` 统一附带短 Session ID（标题/未命名/空白/状态未知），短 ID 默认 8 位并在冲突时延长；下拉框按完整 ID 去重。Host `describeSessionChoice` 保持独立纯函数，Client 不跨模块依赖。
+- **测试**：164/164；新增延迟激活 workspaceRegistry/sessionPersistence、常缺失安全拒绝、能力探测按策略/workspace、API 能力响应、history loading/error/ready 门禁、正常空历史、execution_unavailable 后重新检查、未命名/空白/状态标签、短 ID 碰撞、重复 Session 去重。

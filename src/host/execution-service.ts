@@ -46,12 +46,31 @@ export interface ExecutionIdFactory {
 export interface ExecutionServiceOptions {
   store: ExecutionStore
   todoLookup: (id: string) => Todo | undefined
-  workspaceRegistry?: WorkspaceRegistryLike
-  sessionPersistence?: SessionPersistenceLike
-  sessions?: LiveSessionsLike
-  sessionTitle?: SessionTitleLike
+  /**
+   * Lifecycle services must be resolved lazily: the Host plugin applies before
+   * some of them become active, so capturing `ctx.get()` values here would
+   * permanently freeze an early `undefined`.
+   */
+  workspaceRegistry?: () => WorkspaceRegistryLike | undefined
+  sessionPersistence?: () => SessionPersistenceLike | undefined
+  sessions?: () => LiveSessionsLike | undefined
+  sessionTitle?: () => SessionTitleLike | undefined
   clock: ExecutionClock
   ids: ExecutionIdFactory
+}
+
+export interface DispatchAvailabilityInput {
+  strategy?: ExecutionStrategy
+  workspaceId?: string
+}
+
+export interface DispatchAvailability {
+  ready: boolean
+  reason?: string
+  /** Stable machine names of missing critical dependencies. */
+  missing: string[]
+  /** Non-critical capabilities that only degrade presentation. */
+  warnings: string[]
 }
 
 export type ExecutionServiceErrorCode =
@@ -178,6 +197,114 @@ export class ExecutionService {
 
   constructor(options: ExecutionServiceOptions) {
     this.options = options
+  }
+
+  /** Resolve dependencies at use time; never cache an early undefined. */
+  private currentWorkspaceRegistry(): WorkspaceRegistryLike | undefined {
+    try {
+      return this.options.workspaceRegistry?.()
+    } catch {
+      return undefined
+    }
+  }
+
+  private currentSessionPersistence(): SessionPersistenceLike | undefined {
+    try {
+      return this.options.sessionPersistence?.()
+    } catch {
+      return undefined
+    }
+  }
+
+  private currentSessions(): LiveSessionsLike | undefined {
+    try {
+      return this.options.sessions?.()
+    } catch {
+      return undefined
+    }
+  }
+
+  private currentSessionTitle(): SessionTitleLike | undefined {
+    try {
+      return this.options.sessionTitle?.()
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Whether the Host side of the dispatch chain currently has every critical
+   * dependency for the requested strategy/workspace. This is advisory for the
+   * Client; every write operation still re-validates these dependencies.
+   */
+  async dispatchAvailability(
+    input: DispatchAvailabilityInput = {},
+  ): Promise<DispatchAvailability> {
+    const missing: string[] = []
+    const registry = this.currentWorkspaceRegistry()
+    const persistence = this.currentSessionPersistence()
+    if (registry === undefined) missing.push('workspace_registry')
+    if (persistence === undefined) missing.push('session_persistence')
+
+    if (input.strategy !== undefined) {
+      classifyTargetStrategy(input.strategy)
+    }
+    if (missing.length > 0) {
+      return {
+        ready: false,
+        reason:
+          missing.includes('workspace_registry')
+            ? 'The workspace registry is unavailable.'
+            : 'Session persistence is unavailable.',
+        missing,
+        warnings: [],
+      }
+    }
+
+    if (input.workspaceId !== undefined && input.workspaceId !== '') {
+      if (registry === undefined) {
+        return {
+          ready: false,
+          reason: 'The workspace registry is unavailable.',
+          missing: ['workspace_registry'],
+          warnings: [],
+        }
+      }
+      const workspace =
+        registry.get?.(input.workspaceId) ??
+        registry.list().find((entry) => entry.id === input.workspaceId)
+      if (workspace === undefined) {
+        return {
+          ready: false,
+          reason: 'The selected Workspace was not found.',
+          missing: ['workspace'],
+          warnings: [],
+        }
+      }
+      try {
+        const status = await workspace.status()
+        if (status !== 'ok') {
+          return {
+            ready: false,
+            reason: 'The selected Workspace directory is unavailable.',
+            missing: ['workspace_directory'],
+            warnings: [],
+          }
+        }
+      } catch {
+        return {
+          ready: false,
+          reason: 'The selected Workspace could not be checked.',
+          missing: ['workspace_status'],
+          warnings: [],
+        }
+      }
+    }
+
+    const warnings: string[] = []
+    if (this.currentSessions() === undefined) warnings.push('live_sessions_unavailable')
+    if (this.currentSessionTitle() === undefined) warnings.push('session_titles_unavailable')
+    return { ready: true, missing: [], warnings }
   }
 
   async createIntent(input: CreateExecutionIntentInput): Promise<ExecutionRecord> {
@@ -703,7 +830,7 @@ export class ExecutionService {
         'Reuse executions always target their source Session and have no candidates.',
       )
     }
-    const persistence = this.options.sessionPersistence
+    const persistence = this.currentSessionPersistence()
     if (persistence === undefined) {
       throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
     }
@@ -754,7 +881,7 @@ export class ExecutionService {
     if (record.sourceSessionId === sessionId) {
       throw new ExecutionServiceError('candidate_not_found', 'A fork candidate cannot be the source Session.')
     }
-    const persistence = this.options.sessionPersistence
+    const persistence = this.currentSessionPersistence()
     if (persistence === undefined) {
       throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
     }
@@ -868,7 +995,7 @@ export class ExecutionService {
   }
 
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceEntityLike> {
-    const registry = this.options.workspaceRegistry
+    const registry = this.currentWorkspaceRegistry()
     if (registry === undefined) {
       throw new ExecutionServiceError('execution_unavailable', 'The workspace registry is unavailable.')
     }
@@ -908,7 +1035,7 @@ export class ExecutionService {
   }
 
   private async requireSessionSnapshot(sessionId: string): Promise<PersistedSessionLike> {
-    const persistence = this.options.sessionPersistence
+    const persistence = this.currentSessionPersistence()
     if (persistence === undefined) {
       throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
     }
@@ -942,16 +1069,16 @@ export class ExecutionService {
   }
 
   private async blankStateOf(snapshot: PersistedSessionLike): Promise<'blank' | 'non-blank' | 'unknown'> {
-    const persistence = this.options.sessionPersistence
+    const persistence = this.currentSessionPersistence()
     if (persistence === undefined) return 'unknown'
     return detectSessionBlankState(snapshot, persistence)
   }
 
   private liveTitle(sessionId: string): string | undefined {
-    const live = this.options.sessions?.get(sessionId)
+    const live = this.currentSessions()?.get(sessionId)
     if (live === undefined) return undefined
     try {
-      return this.options.sessionTitle?.get(live)?.title?.trim() || undefined
+      return this.currentSessionTitle()?.get(live)?.title?.trim() || undefined
     } catch {
       return undefined
     }
@@ -966,7 +1093,7 @@ export class ExecutionService {
     record: ExecutionRecord,
   ): Promise<'accepted' | 'not-found' | 'unknown'> {
     const sessionId = record.targetSessionId
-    const persistence = this.options.sessionPersistence
+    const persistence = this.currentSessionPersistence()
     if (sessionId === undefined || persistence?.open === undefined) return 'unknown'
 
     let handle

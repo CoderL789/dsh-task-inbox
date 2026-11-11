@@ -324,7 +324,31 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       'Another client already owns this dispatch attempt; no Session was created here. Refresh and use recovery actions.',
     'execution.dispatch.reuseBindingFailed':
       'The reuse target association was not saved. The source Session is known; recover the binding without creating a Session.',
-    'execution.dispatch.recoverReuse': 'Recover reuse binding',
+    'execution.dispatch.gateBlocked': 'Dispatch is not available right now.',
+    'execution.dispatch.historyLoading': 'Execution state is still loading; dispatch is disabled.',
+    'execution.dispatch.historyUnavailable':
+      'Execution state could not be loaded; re-check it before dispatching.',
+    'execution.dispatch.capabilityUnavailable': 'Host dispatch capability is unavailable: {reason}',
+    'execution.dispatch.reuseRecoverContinue': 'Recover binding and continue dispatch',
+    'execution.dispatch.reuseRecoverConfirm': 'Confirm recovery and continue',
+    'execution.dispatch.reuseRecoverWarning':
+      'This may send a not-yet-accepted Prompt to the original Session, but it will NOT create a new Session. Continue?',
+    'execution.history.title': 'Unresolved executions',
+    'execution.history.count': '{n} unresolved',
+    'execution.history.hint':
+      'Select an execution to inspect its stored ids and recover it. Selecting does not create, fork, or send anything.',
+    'execution.history.loading': 'Loading execution history…',
+    'execution.history.retry': 'Retry loading history',
+    'execution.history.reload': 'Re-check execution state',
+    'execution.history.empty': 'No unresolved executions.',
+    'execution.history.capabilityUnavailable': 'Dispatch unavailable: {reason}',
+    'execution.history.selected': 'Selected',
+    'execution.history.created': 'Created',
+    'execution.summary.sourceSession': 'Source session',
+    'execution.summary.targetSession': 'Target session',
+    'execution.summary.sessionShared': 'Source / target session (reuse)',
+    'execution.summary.notSaved': 'Not saved yet',
+    'execution.summary.pendingSave': '(pending save)',
     'execution.dispatch.recoveryVerificationUnavailable':
       'The Session log could not be read to verify the Prompt; the execution stays unknown. Check manually before retrying.',
     'error.reuse_recovery_unavailable': 'The reuse binding could not be recovered; check the source Session manually.',
@@ -504,7 +528,30 @@ const DICTIONARIES: Record<'en' | 'zh', Record<string, string>> = {
       '另一个客户端已持有本次派发执行权，此处没有创建会话。请刷新并使用恢复操作。',
     'execution.dispatch.reuseBindingFailed':
       '复用目标关联保存失败。来源会话已知，可恢复绑定，不会创建新会话。',
-    'execution.dispatch.recoverReuse': '恢复复用绑定',
+    'execution.dispatch.gateBlocked': '当前条件不满足，暂不能派发。',
+    'execution.dispatch.historyLoading': '执行状态尚未加载完成，暂时不能派发。',
+    'execution.dispatch.historyUnavailable': '执行状态无法加载，请重新检查后再派发。',
+    'execution.dispatch.capabilityUnavailable': 'Host 派发能力不可用：{reason}',
+    'execution.dispatch.reuseRecoverContinue': '恢复绑定并继续派发',
+    'execution.dispatch.reuseRecoverConfirm': '确认恢复并继续',
+    'execution.dispatch.reuseRecoverWarning':
+      '该操作可能向原 Session 发送尚未被接收的 Prompt，但不会创建新会话。是否继续？',
+    'execution.history.title': '历史未解决执行',
+    'execution.history.count': '{n} 条未解决',
+    'execution.history.hint':
+      '选择一条执行查看其保存的 ID 并恢复；选择不会创建、Fork 或发送任何内容。',
+    'execution.history.loading': '正在加载执行历史…',
+    'execution.history.retry': '重新加载历史',
+    'execution.history.reload': '重新检查执行状态',
+    'execution.history.empty': '暂无未解决执行。',
+    'execution.history.capabilityUnavailable': '派发能力不可用：{reason}',
+    'execution.history.selected': '已选择',
+    'execution.history.created': '创建时间',
+    'execution.summary.sourceSession': '来源会话',
+    'execution.summary.targetSession': '目标会话',
+    'execution.summary.sessionShared': '来源 / 目标会话（复用）',
+    'execution.summary.notSaved': '尚未保存',
+    'execution.summary.pendingSave': '（待保存）',
     'execution.dispatch.recoveryVerificationUnavailable':
       'Session 日志无法读取以核验 Prompt；执行保持 unknown，请人工检查后再决定。',
     'error.reuse_recovery_unavailable': '复用绑定恢复失败；请人工检查来源会话。',
@@ -919,6 +966,61 @@ const STYLES: Record<string, Style> = {
     fontSize: '13px',
   },
   summaryRow: { display: 'flex', gap: '12px', justifyContent: 'space-between' },
+  historyList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    marginTop: '10px',
+  },
+  historyHeader: {
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: '8px',
+    flexWrap: 'wrap',
+  },
+  historyItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    width: '100%',
+    textAlign: 'left',
+    padding: '10px 12px',
+    border: '1px solid var(--dsw-alias-border-l1)',
+    borderRadius: '8px',
+    background: 'var(--dsw-alias-bg-layer-2)',
+    color: 'var(--dsw-alias-label-primary)',
+    cursor: 'pointer',
+    font: 'inherit',
+  },
+  historyItemSelected: {
+    borderColor: 'var(--dsw-alias-brand-primary)',
+    boxShadow: 'inset 0 0 0 1px var(--dsw-alias-brand-primary)',
+  },
+  historyRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    fontSize: '12px',
+  },
+  historyId: {
+    fontWeight: 600,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  },
+  historyBadge: {
+    fontSize: '11px',
+    padding: '1px 6px',
+    borderRadius: '999px',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    color: 'var(--dsw-alias-label-secondary)',
+  },
+  historyMeta: {
+    fontSize: '12px',
+    color: 'var(--dsw-alias-label-secondary)',
+    whiteSpace: 'normal',
+    overflowWrap: 'anywhere',
+  },
   summaryKey: {
     color: 'var(--dsw-alias-label-secondary)',
     flexShrink: 0,
@@ -1046,7 +1148,11 @@ function strategyLabel(t: Translate, strategy: ExecutionStrategy): string {
   return t('execution.strategy.new')
 }
 
-function sessionDisplayLabel(t: Translate, session: ExecutionSession): string {
+function sessionDisplayLabel(
+  t: Translate,
+  session: ExecutionSession,
+  idLength = 8,
+): string {
   const title =
     typeof session.title === 'string' && session.title.trim() !== ''
       ? session.title
@@ -1056,7 +1162,173 @@ function sessionDisplayLabel(t: Translate, session: ExecutionSession): string {
   if (session.blankState === 'unknown') flags.push(t('execution.session.stateUnknown'))
   if (!session.stored) flags.push(t('execution.session.notFound'))
   else if (session.live) flags.push(t('execution.session.live'))
-  return flags.length === 0 ? title : `${title} (${flags.join(', ')})`
+  const base = flags.length === 0 ? title : `${title} (${flags.join(', ')})`
+  return `${base} · ${sessionShortCode(session.sessionId, idLength)}`
+}
+
+// ---------------------------------------------------------------------------
+// Execution history helpers (pure; also exercised through the test hook).
+// ---------------------------------------------------------------------------
+
+const UNRESOLVED_EXECUTION_STATUSES: readonly DispatchStatus[] = [
+  'prepared',
+  'session_ready',
+  'dispatching',
+  'unknown',
+]
+
+function isUnresolvedExecution(record: ClientExecutionRecord): boolean {
+  return UNRESOLVED_EXECUTION_STATUSES.includes(record.status)
+}
+
+function unresolvedExecutions(records: readonly ClientExecutionRecord[]): ClientExecutionRecord[] {
+  return records
+    .filter(isUnresolvedExecution)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+}
+
+function defaultHistorySelection(
+  records: readonly ClientExecutionRecord[],
+  preferredId?: string,
+): ClientExecutionRecord | null {
+  if (preferredId !== undefined) {
+    const preferred = records.find((record) => record.executionId === preferredId)
+    if (preferred !== undefined) return preferred
+  }
+  return unresolvedExecutions(records)[0] ?? null
+}
+
+/** The side-effect-free reset applied when switching to another Todo. */
+function emptyExecutionHistory(): {
+  records: ClientExecutionRecord[]
+  selectedExecutionId: string | null
+} {
+  return { records: [], selectedExecutionId: null }
+}
+
+function shortExecutionId(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 8)}…`
+}
+
+function shortSessionId(id: string, length = 8): string {
+  return sessionShortCode(id, length)
+}
+
+interface ExecutionSessionFields {
+  source?: string
+  target?: string
+  /** Reuse where source === persisted target; show one merged row. */
+  shared: boolean
+  /** No target has been persisted yet (a pending association may exist). */
+  targetMissing: boolean
+}
+
+function dedupeExecutionSessions(sessions: readonly ExecutionSession[]): ExecutionSession[] {
+  const byId = new Map<string, ExecutionSession>()
+  for (const session of sessions) {
+    if (!byId.has(session.sessionId)) byId.set(session.sessionId, session)
+  }
+  return [...byId.values()]
+}
+
+function sessionShortCode(sessionId: string, length = 8): string {
+  const core = sessionId.startsWith('session-') ? sessionId.slice('session-'.length) : sessionId
+  return core.length <= length ? core : core.slice(0, length)
+}
+
+/** Short-id length that keeps every Session in this list distinguishable. */
+function sessionLabelIdLength(sessions: readonly ExecutionSession[]): number {
+  const unique = [...new Set(sessions.map((session) => session.sessionId))]
+  const maxLength = Math.max(8, ...unique.map((id) => (id.startsWith('session-') ? id.length - 8 : id.length)))
+  for (let length = 8; length < maxLength; length += 4) {
+    const codes = unique.map((id) => sessionShortCode(id, length))
+    if (new Set(codes).size === codes.length) return length
+  }
+  return maxLength
+}
+
+interface ConfirmDispatchGateInput {
+  dispatchBusy: boolean
+  sessionApiAvailable: boolean
+  historyPhase: 'idle' | 'loading' | 'loaded' | 'error'
+  dispatchReady: boolean
+  capabilityChecking: boolean
+  workspaceReady: boolean
+  hasUnresolvedExecution: boolean
+  hasCurrentExecution: boolean
+}
+
+/** Single gate for starting a brand-new execution. */
+function canConfirmDispatch(input: ConfirmDispatchGateInput): boolean {
+  return (
+    !input.dispatchBusy &&
+    input.sessionApiAvailable &&
+    input.historyPhase === 'loaded' &&
+    input.dispatchReady &&
+    !input.capabilityChecking &&
+    input.workspaceReady &&
+    !input.hasUnresolvedExecution &&
+    !input.hasCurrentExecution
+  )
+}
+
+interface DispatchSelectedGateInput {
+  dispatchBusy: boolean
+  sessionApiAvailable: boolean
+  historyPhase: 'idle' | 'loading' | 'loaded' | 'error'
+  dispatchReady: boolean
+  capabilityChecking: boolean
+  hasSelectedExecution: boolean
+}
+
+/** Gate for continue/recover/Prompt-retry actions on a selected execution. */
+function canDispatchSelected(input: DispatchSelectedGateInput): boolean {
+  return (
+    !input.dispatchBusy &&
+    input.sessionApiAvailable &&
+    input.historyPhase === 'loaded' &&
+    input.dispatchReady &&
+    !input.capabilityChecking &&
+    input.hasSelectedExecution
+  )
+}
+
+/**
+ * Map the persisted execution fields to the UI's source/target model:
+ * - new: only target (source does not exist);
+ * - reuse: source and target are the same Session; merge only when the target
+ *   was actually persisted;
+ * - fork: source is the parent, target is the child.
+ * `pendingTarget` is the Client's actual created Session id that has not been
+ * persisted on the execution yet; for reuse it must never be shown as a target.
+ */
+function executionSessionFields(
+  record: Pick<
+    ClientExecutionRecord,
+    'strategy' | 'sourceSessionId' | 'targetSessionId'
+  >,
+  pendingTarget?: string,
+): ExecutionSessionFields {
+  const source = record.sourceSessionId
+  const persistedTarget = record.targetSessionId
+  const pending =
+    persistedTarget === undefined &&
+    pendingTarget !== undefined &&
+    !(record.strategy === 'reuse' && pendingTarget === source)
+      ? pendingTarget
+      : undefined
+  const target = persistedTarget ?? pending
+  return {
+    source,
+    target,
+    shared:
+      record.strategy === 'reuse' &&
+      persistedTarget !== undefined &&
+      source !== undefined &&
+      persistedTarget === source,
+    targetMissing: target === undefined,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1481,12 +1753,36 @@ interface TaskInboxTestHooks {
   runDispatchFlow: typeof runDispatchFlow
   resumeDispatchFlow: typeof resumeDispatchFlow
   continueDispatch: typeof continueDispatch
+  unresolvedExecutions: typeof unresolvedExecutions
+  defaultHistorySelection: typeof defaultHistorySelection
+  executionSessionFields: typeof executionSessionFields
+  shortExecutionId: typeof shortExecutionId
+  shortSessionId: typeof shortSessionId
+  emptyExecutionHistory: typeof emptyExecutionHistory
+  canConfirmDispatch: typeof canConfirmDispatch
+  canDispatchSelected: typeof canDispatchSelected
+  dedupeExecutionSessions: typeof dedupeExecutionSessions
+  sessionShortCode: typeof sessionShortCode
+  sessionLabelIdLength: typeof sessionLabelIdLength
+  sessionDisplayLabel: typeof sessionDisplayLabel
 }
 
 ;(window as unknown as { __DSH_TASK_INBOX_TEST__?: TaskInboxTestHooks }).__DSH_TASK_INBOX_TEST__ = {
   runDispatchFlow,
   resumeDispatchFlow,
   continueDispatch,
+  unresolvedExecutions,
+  defaultHistorySelection,
+  executionSessionFields,
+  shortExecutionId,
+  shortSessionId,
+  emptyExecutionHistory,
+  canConfirmDispatch,
+  canDispatchSelected,
+  dedupeExecutionSessions,
+  sessionShortCode,
+  sessionLabelIdLength,
+  sessionDisplayLabel,
 }
 
 window.__ModuleLoader__.load({
@@ -1629,6 +1925,42 @@ window.__ModuleLoader__.load({
           const [dispatchCandidates, setDispatchCandidates] =
             React.useState<DispatchCandidate[] | null>(null)
           const [abandonConfirm, setAbandonConfirm] = React.useState(false)
+          const [reuseRecoveryConfirm, setReuseRecoveryConfirm] = React.useState(false)
+          const [executionHistory, setExecutionHistory] = React.useState<ClientExecutionRecord[]>([])
+          const [selectedExecutionId, setSelectedExecutionId] = React.useState<string | null>(null)
+          const [historyPhase, setHistoryPhase] = React.useState<
+            'idle' | 'loading' | 'loaded' | 'error'
+          >('idle')
+          const [historyError, setHistoryError] = React.useState<string | null>(null)
+          const [dispatchReady, setDispatchReady] = React.useState(false)
+          const [dispatchReason, setDispatchReason] = React.useState<string | null>(null)
+          const [capabilityChecking, setCapabilityChecking] = React.useState(false)
+          const historyLoading = historyPhase === 'loading'
+          const dispatchLockRef = React.useRef(false)
+
+          // Capability depends on the selected strategy/workspace and must be
+          // re-checked whenever either changes.
+          React.useEffect(() => {
+            if (executionTarget === null) return
+            void refreshDispatchCapability(executionStrategy, executionWorkspaceId)
+          }, [executionTarget, executionStrategy, executionWorkspaceId])
+
+          // Keep the selected/current execution reflected in the loaded history
+          // list without introducing a separate history page.
+          React.useEffect(() => {
+            if (dispatchResult === null) return
+            setSelectedExecutionId(dispatchResult.executionId)
+            setExecutionHistory((previous) => {
+              const index = previous.findIndex(
+                (record) => record.executionId === dispatchResult.executionId,
+              )
+              if (index !== -1 && previous[index] === dispatchResult) return previous
+              const next = previous.slice()
+              if (index === -1) next.unshift(dispatchResult)
+              else next[index] = dispatchResult
+              return next
+            })
+          }, [dispatchResult])
           const titleInputRef = React.useRef<{ focus(): void } | null>(null)
 
           React.useEffect(() => {
@@ -1797,30 +2129,175 @@ window.__ModuleLoader__.load({
             setConfirmId(null)
             setEditorMode(null)
             setEditingId(null)
+            const resetHistory = emptyExecutionHistory()
+            setExecutionHistory(resetHistory.records)
+            setSelectedExecutionId(resetHistory.selectedExecutionId)
+            setHistoryPhase('idle')
+            setHistoryError(null)
+            setDispatchReady(false)
+            setDispatchReason(null)
+            setCapabilityChecking(false)
             setDispatchResult(null)
             setDispatchSessionId(null)
             setDispatchMessage(null)
             setDispatchError(null)
             setDispatchCandidates(null)
             setAbandonConfirm(false)
+            setReuseRecoveryConfirm(false)
             void loadExecutionContext()
-            void loadLatestExecution(todo.id)
+            void loadExecutionHistory(todo.id)
           }
 
-          async function loadLatestExecution(todoId: string): Promise<void> {
+          async function loadExecutionHistory(
+            todoId: string,
+            preferredId?: string,
+          ): Promise<void> {
+            setHistoryPhase('loading')
+            setHistoryError(null)
             try {
               const data = await callApi<{ executions: ClientExecutionRecord[] }>({
                 op: 'execution-status',
                 todoId,
               })
-              const latest = data.executions[0]
-              if (latest !== undefined && latest.status !== 'accepted') {
-                setDispatchResult(latest)
-                setDispatchMessage(t('execution.dispatch.resumeHint'))
+              const records = Array.isArray(data.executions) ? data.executions : []
+              setExecutionHistory(records)
+              const chosen = defaultHistorySelection(records, preferredId)
+              if (chosen !== null) {
+                setSelectedExecutionId(chosen.executionId)
+                setDispatchResult(chosen)
+                setDispatchSessionId(null)
+                setDispatchError(null)
+                setDispatchCandidates(null)
+                setAbandonConfirm(false)
+                setReuseRecoveryConfirm(false)
+                setDispatchMessage(
+                  isUnresolvedExecution(chosen)
+                    ? t('execution.dispatch.resumeHint')
+                    : null,
+                )
+              } else if (preferredId === undefined) {
+                setSelectedExecutionId(null)
+                setDispatchResult(null)
+                setDispatchSessionId(null)
+                setDispatchMessage(null)
               }
-            } catch {
-              // Execution history is optional; the preview can still run.
+              setHistoryPhase('loaded')
+            } catch (error) {
+              // A failed load must not look like "no execution history".
+              setHistoryError(messageForCode(t, errorCode(error)))
+              setHistoryPhase('error')
             }
+          }
+
+          async function refreshDispatchCapability(
+            strategy: ExecutionStrategy,
+            workspaceId: string,
+          ): Promise<void> {
+            setCapabilityChecking(true)
+            try {
+              const data = await callApi<{
+                dispatchReady: boolean
+                dispatchReason?: string
+                dispatchMissing?: string[]
+                dispatchWarnings?: string[]
+              }>({
+                op: 'execution-capability',
+                strategy,
+                ...(workspaceId === '' ? {} : { workspaceId }),
+              })
+              setDispatchReady(data.dispatchReady === true)
+              setDispatchReason(
+                data.dispatchReady === true ? null : (data.dispatchReason ?? null),
+              )
+            } catch (error) {
+              setDispatchReady(false)
+              setDispatchReason(messageForCode(t, errorCode(error)))
+            } finally {
+              setCapabilityChecking(false)
+            }
+          }
+
+          async function reloadExecutionState(): Promise<void> {
+            if (executionTarget === null) return
+            setDispatchReady(false)
+            setDispatchReason(null)
+            await Promise.all([
+              loadExecutionHistory(executionTarget.id, selectedExecutionId ?? undefined),
+              refreshDispatchCapability(executionStrategy, executionWorkspaceId),
+            ])
+          }
+
+          function currentWorkspaceReady(): boolean {
+            if (executionContext === null || executionWorkspaceId === '') return false
+            const workspace = executionContext.workspaces.find(
+              (entry) => entry.id === executionWorkspaceId,
+            )
+            return workspace !== undefined && workspace.available
+          }
+
+          function currentConfirmGate(): boolean {
+            const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            return canConfirmDispatch({
+              dispatchBusy,
+              sessionApiAvailable: sessions !== undefined,
+              historyPhase,
+              dispatchReady,
+              capabilityChecking,
+              workspaceReady: currentWorkspaceReady(),
+              hasUnresolvedExecution: unresolvedExecutions(executionHistory).length > 0,
+              hasCurrentExecution: dispatchResult !== null,
+            })
+          }
+
+          function currentSelectedGate(): boolean {
+            const sessions = ctx.get?.<ClientSessionsApi>('sessions')
+            return canDispatchSelected({
+              dispatchBusy,
+              sessionApiAvailable: sessions !== undefined,
+              historyPhase,
+              dispatchReady,
+              capabilityChecking,
+              hasSelectedExecution: dispatchResult !== null,
+            })
+          }
+
+          function dispatchGateMessage(): string {
+            if (historyPhase === 'idle' || historyPhase === 'loading') {
+              return t('execution.dispatch.historyLoading')
+            }
+            if (historyPhase === 'error') {
+              return historyError ?? t('execution.dispatch.historyUnavailable')
+            }
+            if (!dispatchReady) {
+              return t('execution.dispatch.capabilityUnavailable').replace(
+                '{reason}',
+                dispatchReason ?? t('error.execution_unavailable'),
+              )
+            }
+            if (!currentWorkspaceReady()) return t('execution.error.workspaceRequired')
+            if (unresolvedExecutions(executionHistory).length > 0) {
+              return t('execution.dispatch.resumeRequired')
+            }
+            if (dispatchSessionUnavailable()) return t('execution.dispatch.noService')
+            return t('execution.dispatch.gateBlocked')
+          }
+
+          function dispatchSessionUnavailable(): boolean {
+            return ctx.get?.<ClientSessionsApi>('sessions') === undefined
+          }
+
+          function selectExecution(record: ClientExecutionRecord): void {
+            if (dispatchBusy) return
+            setSelectedExecutionId(record.executionId)
+            setDispatchResult(record)
+            setDispatchSessionId(null)
+            setDispatchError(null)
+            setDispatchCandidates(null)
+            setAbandonConfirm(false)
+            setReuseRecoveryConfirm(false)
+            setDispatchMessage(
+              isUnresolvedExecution(record) ? t('execution.dispatch.resumeHint') : null,
+            )
           }
 
           function executionHostApi(): DispatchHostApi {
@@ -1969,11 +2446,18 @@ window.__ModuleLoader__.load({
               setDispatchError(t('execution.dispatch.noService'))
               return
             }
+            if (!currentConfirmGate()) {
+              setDispatchError(dispatchGateMessage())
+              return
+            }
 
+            if (dispatchLockRef.current) return
+            dispatchLockRef.current = true
             setDispatchBusy(true)
             setDispatchError(null)
             setDispatchMessage(t('execution.dispatch.busy'))
             setDispatchCandidates(null)
+            setReuseRecoveryConfirm(false)
             try {
               const outcome = await runDispatchFlow(
                 { host: executionHostApi(), sessions },
@@ -2046,10 +2530,20 @@ window.__ModuleLoader__.load({
                   setDispatchError(t('execution.dispatch.error'))
                 }
               }
+              if (outcome.errorCode === 'execution_unavailable') {
+                setDispatchReady(false)
+                setDispatchReason(messageForCode(t, outcome.errorCode))
+              }
             } catch (error) {
               const code = errorCode(error)
               setDispatchMessage(null)
               setDispatchError(messageForCode(t, code))
+              if (code === 'execution_unavailable') {
+                // The Host cannot currently serve dispatch. Do not leave the
+                // confirm button enabled on a stale capability state.
+                setDispatchReady(false)
+                setDispatchReason(messageForCode(t, code))
+              }
               if (code === 'execution_unresolved' && executionTarget !== null) {
                 // Surface the unresolved execution so the UI switches to
                 // recovery actions instead of leaving "confirm" enabled.
@@ -2068,6 +2562,7 @@ window.__ModuleLoader__.load({
                 }
               }
             } finally {
+              dispatchLockRef.current = false
               setDispatchBusy(false)
             }
           }
@@ -2075,7 +2570,12 @@ window.__ModuleLoader__.load({
           async function resumeDispatch(): Promise<void> {
             const record = dispatchResult
             const sessions = ctx.get?.<ClientSessionsApi>('sessions')
-            if (dispatchBusy || record === null || sessions === undefined) return
+            if (dispatchBusy || dispatchLockRef.current || record === null || sessions === undefined) return
+            if (!currentSelectedGate()) {
+              setDispatchError(dispatchGateMessage())
+              return
+            }
+            dispatchLockRef.current = true
             setDispatchBusy(true)
             setDispatchError(null)
             setDispatchMessage(t('execution.dispatch.busy'))
@@ -2106,6 +2606,7 @@ window.__ModuleLoader__.load({
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))
             } finally {
+              dispatchLockRef.current = false
               setDispatchBusy(false)
             }
           }
@@ -2118,6 +2619,8 @@ window.__ModuleLoader__.load({
               setDispatchError(t('execution.dispatch.abandonWarning'))
               return
             }
+            if (dispatchLockRef.current) return
+            dispatchLockRef.current = true
             setDispatchBusy(true)
             setAbandonConfirm(false)
             try {
@@ -2132,13 +2635,31 @@ window.__ModuleLoader__.load({
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))
             } finally {
+              dispatchLockRef.current = false
               setDispatchBusy(false)
             }
           }
 
+          function requestReuseRecovery(): void {
+            if (dispatchBusy || dispatchResult === null) return
+            if (!currentSelectedGate()) {
+              setDispatchError(dispatchGateMessage())
+              return
+            }
+            if (!reuseRecoveryConfirm) {
+              setReuseRecoveryConfirm(true)
+              setDispatchError(null)
+              setDispatchMessage(t('execution.dispatch.reuseRecoverWarning'))
+              return
+            }
+            setReuseRecoveryConfirm(false)
+            void resumeDispatch()
+          }
+
           async function checkDispatchStatus(): Promise<void> {
             const record = dispatchResult
-            if (record === null || dispatchBusy) return
+            if (record === null || dispatchBusy || dispatchLockRef.current) return
+            dispatchLockRef.current = true
             setDispatchBusy(true)
             try {
               const data = await callApi<{ execution: ClientExecutionRecord }>({
@@ -2156,6 +2677,7 @@ window.__ModuleLoader__.load({
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))
             } finally {
+              dispatchLockRef.current = false
               setDispatchBusy(false)
             }
           }
@@ -2201,7 +2723,12 @@ window.__ModuleLoader__.load({
             const record = dispatchResult
             const sessionId = dispatchSessionId
             const sessions = ctx.get?.<ClientSessionsApi>('sessions')
-            if (record === null || sessionId === null || sessions === undefined || dispatchBusy) return
+            if (record === null || sessionId === null || sessions === undefined || dispatchBusy || dispatchLockRef.current) return
+            if (!currentSelectedGate()) {
+              setDispatchError(dispatchGateMessage())
+              return
+            }
+            dispatchLockRef.current = true
             setDispatchBusy(true)
             setDispatchError(null)
             try {
@@ -2261,6 +2788,7 @@ window.__ModuleLoader__.load({
             } catch (error) {
               setDispatchError(messageForCode(t, errorCode(error)))
             } finally {
+              dispatchLockRef.current = false
               setDispatchBusy(false)
             }
           }
@@ -2336,9 +2864,12 @@ window.__ModuleLoader__.load({
             const sessionsInWorkspace =
               context === null
                 ? []
-                : context.sessions.filter(
-                    (session) => session.workspaceId === executionWorkspaceId,
+                : dedupeExecutionSessions(
+                    context.sessions.filter(
+                      (session) => session.workspaceId === executionWorkspaceId,
+                    ),
                   )
+            const sessionIdLength = sessionLabelIdLength(sessionsInWorkspace)
             const strategySessions = sessionsInWorkspace.filter((session) =>
               isSessionSuitableForStrategy(session, executionStrategy),
             )
@@ -2350,6 +2881,26 @@ window.__ModuleLoader__.load({
               (session) => session.blankState === 'unknown',
             ).length
             const dispatchAvailable = ctx.get?.<ClientSessionsApi>('sessions') !== undefined
+            const unresolvedHistory = unresolvedExecutions(executionHistory)
+            const workspaceReady = workspace !== undefined && workspace.available
+            const confirmGate = canConfirmDispatch({
+              dispatchBusy,
+              sessionApiAvailable: dispatchAvailable,
+              historyPhase,
+              dispatchReady,
+              capabilityChecking,
+              workspaceReady,
+              hasUnresolvedExecution: unresolvedHistory.length > 0,
+              hasCurrentExecution: dispatchResult !== null,
+            })
+            const selectedDispatchGate = canDispatchSelected({
+              dispatchBusy,
+              sessionApiAvailable: dispatchAvailable,
+              historyPhase,
+              dispatchReady,
+              capabilityChecking,
+              hasSelectedExecution: dispatchResult !== null,
+            })
 
             function summaryRow(label: string, value: string): unknown {
               return h(
@@ -2360,16 +2911,242 @@ window.__ModuleLoader__.load({
               )
             }
 
-            function actionButton(label: string, handler: () => void): unknown {
+            function actionButton(
+              label: string,
+              handler: () => void,
+              disabled = false,
+            ): unknown {
               return h(
                 'button',
                 {
                   type: 'button',
                   style: STYLES.secondaryButton,
                   onClick: handler,
-                  disabled: dispatchBusy,
+                  disabled: disabled || dispatchBusy,
                 },
                 label,
+              )
+            }
+
+            /** Readable label for a raw Session id without inventing a title. */
+            function sessionReferenceLabel(sessionId: string | undefined): string {
+              if (sessionId === undefined) return t('execution.summary.unset')
+              const known = context?.sessions.find(
+                (session) => session.sessionId === sessionId,
+              )
+              if (known !== undefined) {
+                if (typeof known.title === 'string' && known.title.trim() !== '') {
+                  return known.title
+                }
+                if (known.createdAt !== undefined) {
+                  return `${shortSessionId(sessionId)} · ${formatCreatedAt(
+                    new Date(known.createdAt).toISOString(),
+                    dateLocale,
+                  )}`
+                }
+              }
+              return shortSessionId(sessionId)
+            }
+
+            function recordSessionRows(record: ClientExecutionRecord): unknown[] {
+              const fields = executionSessionFields(record, dispatchSessionId ?? undefined)
+              const targetValue =
+                record.targetSessionId !== undefined
+                  ? sessionReferenceLabel(record.targetSessionId)
+                  : fields.target !== undefined
+                    ? `${sessionReferenceLabel(fields.target)} ${t('execution.summary.pendingSave')}`
+                    : t('execution.summary.notSaved')
+
+              if (record.strategy === 'new') {
+                return [summaryRow(t('execution.summary.targetSession'), targetValue)]
+              }
+              if (record.strategy === 'reuse') {
+                if (fields.shared) {
+                  return [
+                    summaryRow(
+                      t('execution.summary.sessionShared'),
+                      sessionReferenceLabel(fields.source),
+                    ),
+                  ]
+                }
+                return [
+                  summaryRow(
+                    t('execution.summary.sourceSession'),
+                    sessionReferenceLabel(fields.source),
+                  ),
+                  summaryRow(t('execution.summary.targetSession'), targetValue),
+                ]
+              }
+              return [
+                summaryRow(
+                  t('execution.summary.sourceSession'),
+                  sessionReferenceLabel(fields.source),
+                ),
+                summaryRow(t('execution.summary.targetSession'), targetValue),
+              ]
+            }
+
+            function renderExecutionHistory(): unknown {
+              const unresolved = unresolvedExecutions(executionHistory)
+              const capabilityNotice =
+                dispatchReady || capabilityChecking
+                  ? null
+                  : h(
+                      'div',
+                      null,
+                      h(
+                        'p',
+                        { role: 'alert', style: STYLES.errorText },
+                        t('execution.history.capabilityUnavailable').replace(
+                          '{reason}',
+                          dispatchReason ?? t('error.execution_unavailable'),
+                        ),
+                      ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          style: { ...STYLES.secondaryButton, marginTop: '8px' },
+                          onClick: () => void reloadExecutionState(),
+                        },
+                        t('execution.history.reload'),
+                      ),
+                    )
+              if (historyPhase === 'idle' || historyLoading) {
+                return h(
+                  'div',
+                  { style: STYLES.sectionBox },
+                  h(
+                    'div',
+                    { style: { fontWeight: 600 } },
+                    t('execution.history.title'),
+                  ),
+                  h('p', { style: STYLES.muted }, t('execution.history.loading')),
+                )
+              }
+              if (historyPhase === 'error') {
+                return h(
+                  'div',
+                  { style: STYLES.sectionBox },
+                  h(
+                    'div',
+                    { style: { fontWeight: 600 } },
+                    t('execution.history.title'),
+                  ),
+                  h(
+                    'p',
+                    { role: 'alert', style: STYLES.errorText },
+                    historyError ?? t('error.unknown'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: { ...STYLES.secondaryButton, marginTop: '8px' },
+                      onClick: () => void reloadExecutionState(),
+                    },
+                    t('execution.history.retry'),
+                  ),
+                )
+              }
+              if (unresolved.length === 0) {
+                return h(
+                  'div',
+                  { style: STYLES.sectionBox },
+                  h(
+                    'div',
+                    { style: STYLES.historyHeader },
+                    h('div', { style: { fontWeight: 600 } }, t('execution.history.title')),
+                    h('span', { style: STYLES.historyBadge }, '0'),
+                  ),
+                  h('p', { style: STYLES.hintText }, t('execution.history.empty')),
+                  capabilityNotice,
+                )
+              }
+              return h(
+                'div',
+                { style: STYLES.sectionBox },
+                h(
+                  'div',
+                  { style: STYLES.historyHeader },
+                  h('div', { style: { fontWeight: 600 } }, t('execution.history.title')),
+                  h(
+                    'span',
+                    { style: STYLES.historyBadge },
+                    t('execution.history.count').replace('{n}', String(unresolved.length)),
+                  ),
+                ),
+                h('p', { style: STYLES.hintText }, t('execution.history.hint')),
+                capabilityNotice,
+                h(
+                  'div',
+                  { style: STYLES.historyList },
+                  ...unresolved.map((record) =>
+                    h(
+                      'button',
+                      {
+                        key: record.executionId,
+                        type: 'button',
+                        style: {
+                          ...STYLES.historyItem,
+                          ...(record.executionId === selectedExecutionId
+                            ? STYLES.historyItemSelected
+                            : {}),
+                        },
+                        disabled: dispatchBusy,
+                        onClick: () => selectExecution(record),
+                      },
+                      h(
+                        'div',
+                        { style: STYLES.historyRow },
+                        h('span', { style: STYLES.historyId }, shortExecutionId(record.executionId)),
+                        h(
+                          'span',
+                          { style: STYLES.historyBadge },
+                          strategyLabel(t, record.strategy),
+                        ),
+                        h(
+                          'span',
+                          { style: STYLES.historyBadge },
+                          describeDispatchStatus(record.status),
+                        ),
+                        record.executionId === selectedExecutionId
+                          ? h(
+                              'span',
+                              { style: STYLES.historyBadge },
+                              t('execution.history.selected'),
+                            )
+                          : null,
+                      ),
+                      h(
+                        'div',
+                        { style: STYLES.historyMeta },
+                        `${t('execution.history.created')}: ${formatCreatedAt(
+                          record.createdAt,
+                          dateLocale,
+                        )}`,
+                      ),
+                      record.sourceSessionId === undefined
+                        ? null
+                        : h(
+                            'div',
+                            { style: STYLES.historyMeta },
+                            `${t('execution.summary.sourceSession')}: ${sessionReferenceLabel(
+                              record.sourceSessionId,
+                            )}`,
+                          ),
+                      h(
+                        'div',
+                        { style: STYLES.historyMeta },
+                        `${t('execution.summary.targetSession')}: ${
+                          record.targetSessionId === undefined
+                            ? t('execution.summary.notSaved')
+                            : sessionReferenceLabel(record.targetSessionId)
+                        }`,
+                      ),
+                    ),
+                  ),
+                ),
               )
             }
 
@@ -2394,18 +3171,31 @@ window.__ModuleLoader__.load({
                 record.strategy === 'reuse' &&
                 record.sourceSessionId !== undefined &&
                 record.targetSessionId === undefined &&
-                (record.status === 'dispatching' || record.status === 'unknown')
-              if (reuseRecoverable && targetId === undefined) {
+                (record.status === 'prepared' ||
+                  record.status === 'dispatching' ||
+                  record.status === 'unknown')
+              if (reuseRecoverable) {
                 buttons.push(
-                  actionButton(t('execution.dispatch.recoverReuse'), () => void resumeDispatch()),
+                  actionButton(
+                    reuseRecoveryConfirm
+                      ? t('execution.dispatch.reuseRecoverConfirm')
+                      : t('execution.dispatch.reuseRecoverContinue'),
+                    requestReuseRecovery,
+                    !selectedDispatchGate,
+                  ),
                 )
               }
-              if (record?.status === 'prepared') {
+              if (record?.status === 'prepared' && !reuseRecoverable) {
                 buttons.push(
-                  actionButton(t('execution.dispatch.resume'), () => void resumeDispatch()),
+                  actionButton(
+                    t('execution.dispatch.resume'),
+                    () => void resumeDispatch(),
+                    !selectedDispatchGate,
+                  ),
                 )
               }
               if (
+                !reuseRecoverable &&
                 targetId !== undefined &&
                 record !== null &&
                 (record.status === 'session_ready' ||
@@ -2414,7 +3204,11 @@ window.__ModuleLoader__.load({
               ) {
                 buttons.push(
                   actionButton(t('execution.dispatch.check'), () => void checkDispatchStatus()),
-                  actionButton(t('execution.dispatch.continue'), () => void resumeDispatch()),
+                  actionButton(
+                    t('execution.dispatch.continue'),
+                    () => void resumeDispatch(),
+                    !selectedDispatchGate,
+                  ),
                 )
               }
               if (
@@ -2424,12 +3218,14 @@ window.__ModuleLoader__.load({
                 dispatchError !== null
               ) {
                 buttons.push(
-                  actionButton(t('execution.dispatch.persistFailed').replace('{id}', dispatchSessionId), () =>
-                    void retryPersistSession(),
+                  actionButton(
+                    t('execution.dispatch.persistFailed').replace('{id}', dispatchSessionId),
+                    () => void retryPersistSession(),
+                    !selectedDispatchGate,
                   ),
                 )
               }
-              if (record?.status === 'unknown') {
+              if (record?.status === 'unknown' && record.strategy !== 'reuse') {
                 buttons.push(
                   actionButton(t('execution.dispatch.candidates'), () => void loadDispatchCandidates()),
                 )
@@ -2455,6 +3251,7 @@ window.__ModuleLoader__.load({
                     setDispatchError(null)
                     setDispatchCandidates(null)
                     setAbandonConfirm(false)
+                    setReuseRecoveryConfirm(false)
                     setExecutionNotice(null)
                   }),
                 )
@@ -2478,9 +3275,7 @@ window.__ModuleLoader__.load({
                 record === null
                   ? null
                   : summaryRow(t('execution.summary.status'), describeDispatchStatus(record.status)),
-                targetId === undefined
-                  ? null
-                  : summaryRow(t('execution.summary.session'), targetId),
+                ...(record === null ? [] : recordSessionRows(record)),
                 record?.bindingSource === 'manual'
                   ? h('p', { style: STYLES.errorText }, t('execution.dispatch.manualBindingWarning'))
                   : null,
@@ -2667,7 +3462,7 @@ window.__ModuleLoader__.load({
                               value: session.sessionId,
                               disabled: !isSessionSuitableForStrategy(session, executionStrategy),
                             },
-                            sessionDisplayLabel(t, session),
+                            sessionDisplayLabel(t, session, sessionIdLength),
                           ),
                         ),
                       ),
@@ -2722,10 +3517,11 @@ window.__ModuleLoader__.load({
                       ? t('execution.summary.newSession')
                       : sourceSession === undefined
                         ? t('execution.summary.unset')
-                        : sessionDisplayLabel(t, sourceSession),
+                        : sessionDisplayLabel(t, sourceSession, sessionIdLength),
                   ),
                 ),
 
+                renderExecutionHistory(),
                 renderDispatchStatus(),
                 dispatchAvailable
                   ? null
@@ -2751,12 +3547,12 @@ window.__ModuleLoader__.load({
                       type: 'button',
                       style: {
                         ...STYLES.primaryButton,
-                        ...(dispatchBusy || !dispatchAvailable || dispatchResult !== null
-                          ? { opacity: 0.55, cursor: 'default' }
-                          : {}),
+                        ...(confirmGate
+                          ? {}
+                          : { opacity: 0.55, cursor: 'default' }),
                       },
                       onClick: () => void startDispatch(),
-                      disabled: dispatchBusy || !dispatchAvailable || dispatchResult !== null,
+                      disabled: !confirmGate,
                       'aria-busy': dispatchBusy,
                     },
                     dispatchBusy

@@ -113,16 +113,25 @@ function makeHarness(options = {}) {
   let counter = 0
   let nowMs = options.nowMs ?? 1_700_000_050_000
   let nowIso = new Date(nowMs).toISOString()
+  const defaultRegistry = {
+    list: () => [workspace()],
+    get: (id) => (id === 'ws-a' ? workspace() : undefined),
+  }
+  const registryValue = options.workspaceRegistry ?? defaultRegistry
+  const workspaceRegistryProvider =
+    typeof registryValue === 'function' ? registryValue : () => registryValue
+  const persistenceProvider =
+    options.sessionPersistenceProvider ?? (() => persistence)
+  const sessionsValue = options.sessions ?? { get: () => undefined }
+  const sessionTitleValue = options.sessionTitle ?? { get: () => undefined }
   const service = new ExecutionService({
     store,
     todoLookup: (id) => (options.todos ?? [todo()]).find((entry) => entry.id === id),
-    workspaceRegistry: options.workspaceRegistry ?? {
-      list: () => [workspace()],
-      get: (id) => (id === 'ws-a' ? workspace() : undefined),
-    },
-    sessionPersistence: persistence,
-    sessions: { get: () => undefined },
-    sessionTitle: { get: () => undefined },
+    workspaceRegistry: workspaceRegistryProvider,
+    sessionPersistence: persistenceProvider,
+    sessions: () => (typeof sessionsValue === 'function' ? sessionsValue() : sessionsValue),
+    sessionTitle: () =>
+      typeof sessionTitleValue === 'function' ? sessionTitleValue() : sessionTitleValue,
     clock: {
       isoNow: () => nowIso,
       epochMs: () => nowMs,
@@ -960,5 +969,89 @@ test('authorizePromptRetry refuses to authorize at the scan limit', async () => 
   const authorization = await service.authorizePromptRetry(record.executionId)
   assert.equal(authorization.authorized, false)
   assert.equal(authorization.execution.status, 'unknown')
+})
+
+// ---------------------------------------------------------------------------
+// Host lifecycle dependency providers and dispatch capability probing
+// ---------------------------------------------------------------------------
+
+test('a workspaceRegistry that becomes active after construction is resolved lazily', async () => {
+  let registry
+  const harness = makeHarness({ workspaceRegistry: () => registry })
+  await assert.rejects(
+    harness.service.createIntent(newIntent()),
+    (error) => error.code === 'execution_unavailable',
+  )
+
+  registry = {
+    list: () => [workspace()],
+    get: (id) => (id === 'ws-a' ? workspace() : undefined),
+  }
+  const created = await harness.service.createIntent(newIntent())
+  assert.equal(created.status, 'prepared')
+
+  const availability = await harness.service.dispatchAvailability({
+    strategy: 'new',
+    workspaceId: 'ws-a',
+  })
+  assert.equal(availability.ready, true)
+})
+
+test('a sessionPersistence that becomes active after construction is resolved lazily', async () => {
+  let persistence
+  const harness = makeHarness({
+    sessionPersistenceProvider: () => persistence,
+  })
+  const reuseIntent = newIntent({ strategy: 'reuse', sourceSessionId: 'session-src' })
+  await assert.rejects(
+    harness.service.createIntent(reuseIntent),
+    (error) => error.code === 'execution_unavailable',
+  )
+
+  persistence = harness.persistence
+  const created = await harness.service.createIntent(reuseIntent)
+  assert.equal(created.status, 'prepared')
+})
+
+test('dispatchAvailability reports missing critical dependencies and strategy/workspace state', async () => {
+  const missingRegistry = makeHarness({ workspaceRegistry: () => undefined })
+  const registryMissing = await missingRegistry.service.dispatchAvailability({ strategy: 'new' })
+  assert.equal(registryMissing.ready, false)
+  assert.equal(registryMissing.missing.includes('workspace_registry'), true)
+
+  let persistence
+  const missingPersistence = makeHarness({
+    sessionPersistenceProvider: () => persistence,
+  })
+  const persistenceMissing = await missingPersistence.service.dispatchAvailability({
+    strategy: 'reuse',
+  })
+  assert.equal(persistenceMissing.ready, false)
+  assert.equal(persistenceMissing.missing.includes('session_persistence'), true)
+
+  const healthy = makeHarness()
+  const ready = await healthy.service.dispatchAvailability({
+    strategy: 'fork',
+    workspaceId: 'ws-a',
+  })
+  assert.equal(ready.ready, true)
+  assert.equal(ready.missing.length, 0)
+
+  const missingWorkspace = await healthy.service.dispatchAvailability({
+    strategy: 'new',
+    workspaceId: 'missing-workspace',
+  })
+  assert.equal(missingWorkspace.ready, false)
+  assert.equal(missingWorkspace.missing.includes('workspace'), true)
+
+  const unavailableRegistry = {
+    list: () => [workspace({ status: async () => 'missing-dir' })],
+    get: () => workspace({ status: async () => 'missing-dir' }),
+  }
+  const unavailableWorkspace = await makeHarness({
+    workspaceRegistry: unavailableRegistry,
+  }).service.dispatchAvailability({ strategy: 'new', workspaceId: 'ws-a' })
+  assert.equal(unavailableWorkspace.ready, false)
+  assert.equal(unavailableWorkspace.missing.includes('workspace_directory'), true)
 })
 
