@@ -66,6 +66,8 @@ export interface ExecutionOverviewRecord {
   workspacePath: string
   sourceSessionId?: string
   targetSessionId?: string
+  sourceSessionTitle?: string
+  targetSessionTitle?: string
   bindingSource?: 'client' | 'manual'
   status: ExecutionStatus
   errorCode?: string
