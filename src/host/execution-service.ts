@@ -249,7 +249,7 @@ export class ExecutionService {
     if (input.strategy !== undefined) {
       classifyTargetStrategy(input.strategy)
     }
-    if (missing.length > 0) {
+    if (registry === undefined || persistence === undefined) {
       return {
         ready: false,
         reason:
@@ -257,6 +257,17 @@ export class ExecutionService {
             ? 'The workspace registry is unavailable.'
             : 'Session persistence is unavailable.',
         missing,
+        warnings: [],
+      }
+    }
+
+    try {
+      await this.requireSessionSnapshots()
+    } catch (error) {
+      return {
+        ready: false,
+        reason: describe(error),
+        missing: ['session_persistence_list'],
         warnings: [],
       }
     }
@@ -344,6 +355,7 @@ export class ExecutionService {
       if (sourceSessionId !== undefined) {
         throw new ExecutionServiceError('invalid_payload', 'The new-session strategy must not name a source Session.')
       }
+      await this.requireSessionSnapshots()
     } else {
       if (sourceSessionId === undefined) {
         throw new ExecutionServiceError('source_session_required', 'Select a source Session.')
@@ -561,21 +573,27 @@ export class ExecutionService {
    * restart/timeout the execution must go through unknown/recovery instead.
    */
   async acquireExecution(executionId: string): Promise<ExecutionAcquisition> {
+    const existing = this.requireRecord(executionId)
+    if (existing.status !== 'prepared') return { execution: existing, acquired: false }
+    const workspace = await this.requireWorkspace(existing.workspaceId)
+    if (existing.strategy === 'new') {
+      await this.requireSessionSnapshots()
+    } else {
+      if (existing.sourceSessionId === undefined) {
+        throw new ExecutionServiceError('source_session_required', 'Select a source Session.')
+      }
+      await this.requireSourceSession(workspace, existing.sourceSessionId)
+    }
     return this.durable(() => this.options.store.mutate<ExecutionAcquisition>((current) => {
       const index = current.findIndex((entry) => entry.executionId === executionId)
       if (index === -1) throw new ExecutionServiceError('execution_not_found', 'Execution was not found.')
       const record = current[index]
-      if (record.status !== 'prepared') {
-        return { next: current, result: { execution: record, acquired: false } }
-      }
+      if (record.status !== 'prepared') return { next: current, result: { execution: record, acquired: false } }
       const nowMs = this.options.clock.epochMs()
       const now = this.options.clock.isoNow()
-      const token =
-        this.options.ids.leaseToken?.() ?? this.options.ids.executionId()
+      const token = this.options.ids.leaseToken?.() ?? this.options.ids.executionId()
       const acquired: ExecutionRecord = {
-        ...record,
-        status: 'dispatching',
-        dispatchLeaseToken: token,
+        ...record, status: 'dispatching', dispatchLeaseToken: token,
         dispatchLeaseAcquiredAt: now,
         dispatchLeaseExpiresAt: new Date(nowMs + DISPATCH_INTERRUPT_GRACE_MS).toISOString(),
         updatedAt: now,
@@ -1034,21 +1052,22 @@ export class ExecutionService {
     return snapshot
   }
 
-  private async requireSessionSnapshot(sessionId: string): Promise<PersistedSessionLike> {
+  private async requireSessionSnapshots(): Promise<readonly PersistedSessionLike[]> {
     const persistence = this.currentSessionPersistence()
-    if (persistence === undefined) {
-      throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
-    }
-    let snapshots: readonly PersistedSessionLike[]
+    if (persistence === undefined) throw new ExecutionServiceError('execution_unavailable', 'Session persistence is unavailable.')
     try {
-      snapshots = await persistence.list()
+      const snapshots = await persistence.list()
+      if (!Array.isArray(snapshots)) throw new Error('Session persistence returned an invalid Session list.')
+      return snapshots
     } catch (error) {
       throw new ExecutionServiceError('execution_unavailable', `Session list unavailable: ${describe(error)}`)
     }
+  }
+
+  private async requireSessionSnapshot(sessionId: string): Promise<PersistedSessionLike> {
+    const snapshots = await this.requireSessionSnapshots()
     const snapshot = snapshots.find((entry) => String(entry.header.id) === sessionId)
-    if (snapshot === undefined) {
-      throw new ExecutionServiceError('target_session_not_found', 'The Session was not found.')
-    }
+    if (snapshot === undefined) throw new ExecutionServiceError('target_session_not_found', 'The Session was not found.')
     return snapshot
   }
 

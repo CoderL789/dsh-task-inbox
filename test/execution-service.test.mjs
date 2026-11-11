@@ -1055,3 +1055,48 @@ test('dispatchAvailability reports missing critical dependencies and strategy/wo
   assert.equal(unavailableWorkspace.missing.includes('workspace_directory'), true)
 })
 
+
+test('dispatchAvailability rejects a Session Persistence provider whose list operation fails', async () => {
+  const persistence = fakePersistence()
+  persistence.list = async () => { throw new Error('session index is offline') }
+  const { service } = makeHarness({ persistence })
+  const availability = await service.dispatchAvailability({ strategy: 'new', workspaceId: 'ws-a' })
+  assert.equal(availability.ready, false)
+  assert.deepEqual(availability.missing, ['session_persistence_list'])
+  assert.match(availability.reason, /session index is offline/)
+})
+
+test('new-session intent is not persisted when Session Persistence cannot list Sessions', async () => {
+  const persistence = fakePersistence()
+  persistence.list = async () => { throw new Error('session index is offline') }
+  const { service, store } = makeHarness({ persistence })
+  await assert.rejects(service.createIntent(newIntent()), error => error.code === 'execution_unavailable')
+  assert.equal(store.records.length, 0)
+})
+
+test('acquireExecution rechecks Session Persistence before granting the create/fork lease', async () => {
+  const harness = makeHarness()
+  const record = await harness.service.createIntent(newIntent())
+  harness.persistence.list = async () => { throw new Error('session index went offline') }
+  await assert.rejects(harness.service.acquireExecution(record.executionId), error => error.code === 'execution_unavailable')
+  assert.equal(harness.store.records[0].status, 'prepared')
+})
+
+test('acquireExecution rechecks Workspace availability before granting the create/fork lease', async () => {
+  let available = true
+  const registry = { list: () => [workspace({ status: async () => available ? 'ok' : 'missing-dir' })],
+    get: () => workspace({ status: async () => available ? 'ok' : 'missing-dir' }) }
+  const harness = makeHarness({ workspaceRegistry: () => registry })
+  const record = await harness.service.createIntent(newIntent())
+  available = false
+  await assert.rejects(harness.service.acquireExecution(record.executionId), error => error.code === 'workspace_unavailable')
+  assert.equal(harness.store.records[0].status, 'prepared')
+})
+
+test('acquireExecution revalidates a reuse source Session before granting the lease', async () => {
+  const harness = makeHarness()
+  const record = await harness.service.createIntent(newIntent({ strategy: 'reuse', sourceSessionId: 'session-src' }))
+  harness.snapshots.find(entry => entry.header.id === 'session-src').eventCount = 0
+  await assert.rejects(harness.service.acquireExecution(record.executionId), error => error.code === 'source_session_blank')
+  assert.equal(harness.store.records[0].status, 'prepared')
+})

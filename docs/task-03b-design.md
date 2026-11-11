@@ -1,6 +1,14 @@
 # Task 03B 技术方案：执行派发（架构验证稿）
 
-> 状态：**架构验证完成并已实现（2026-11-11，版本 0.4.5 完成初始化依赖与能力门禁修复，待复审）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1–§0.6 记录实现与修复差异。
+> 状态：**架构验证完成并已实现（2026-11-11，版本 0.4.6 收紧派发前置校验，待自动化回归与真实 GUI 验收）**；开发 Agent 未创建/Fork/恢复真实 Session，也未发送真实 Prompt；下方 §0.1–§0.7 记录实现与修复差异。
+
+## 0.7 派发前置校验收紧（0.4.6）
+
+- **Session Persistence 可用性**：`dispatchAvailability` 不再只检查服务对象是否存在，而是实际执行只读 `list()`；失败或返回无效列表时报告 not-ready 和具体原因。
+- **Host 写操作复核**：新建策略创建 intent 前检查 Session 列表；`execution-acquire` 发放 create/fork 执行权前重新检查 Workspace 状态与 Session Persistence；reuse/fork 还会重新验证来源 Session 的 Workspace 归属和非空状态。检查失败不写入租约，Client 不得创建/Fork。
+- **Client 策略门禁**：new 不要求来源 Session；reuse/fork 必须已选择且符合当前策略的来源 Session，未选择或不适用时确认按钮禁用；保留 `startDispatch` 内原有的最终参数校验。
+- **测试覆盖**：新增 Session 列表读取失败、intent 前置检查、acquire 阶段 Workspace/Persistence 复核、reuse 来源状态变化，以及三策略 Client 门禁测试。
+- **边界**：预检与真正创建/Fork 之间仍存在外部状态变化窗口；`markSessionReady` 的目标 Session 复核和后续日志核验继续作为最终保护，不把预检视为原子锁。
 
 ## 0.6 初始化依赖与能力门禁修复（0.4.5）
 

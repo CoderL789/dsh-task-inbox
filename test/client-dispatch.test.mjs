@@ -872,6 +872,9 @@ test('duplicate Session ids are shown only once', () => {
 
 test('canConfirmDispatch requires loaded history, capability, workspace and no conflict', () => {
   const base = {
+    strategy: 'new',
+    hasSelectedSourceSession: false,
+    selectedSourceSessionSuitable: false,
     dispatchBusy: false,
     sessionApiAvailable: true,
     historyPhase: 'loaded',
@@ -893,6 +896,20 @@ test('canConfirmDispatch requires loaded history, capability, workspace and no c
   assert.equal(hooks.canConfirmDispatch({ ...base, dispatchBusy: true }), false)
 })
 
+test('canConfirmDispatch requires a suitable source Session for reuse and fork, but not new', () => {
+  const base = {
+    strategy: 'new', hasSelectedSourceSession: false, selectedSourceSessionSuitable: false,
+    dispatchBusy: false, sessionApiAvailable: true, historyPhase: 'loaded', dispatchReady: true,
+    capabilityChecking: false, workspaceReady: true, hasUnresolvedExecution: false, hasCurrentExecution: false,
+  }
+  assert.equal(hooks.canConfirmDispatch(base), true)
+  assert.equal(hooks.canConfirmDispatch({ ...base, strategy: 'reuse' }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, strategy: 'fork' }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, strategy: 'reuse', hasSelectedSourceSession: true }), false)
+  assert.equal(hooks.canConfirmDispatch({ ...base, strategy: 'reuse', hasSelectedSourceSession: true, selectedSourceSessionSuitable: true }), true)
+  assert.equal(hooks.canConfirmDispatch({ ...base, strategy: 'fork', hasSelectedSourceSession: true, selectedSourceSessionSuitable: true }), true)
+})
+
 test('canDispatchSelected gates continue/recover actions on current capability', () => {
   const base = {
     dispatchBusy: false,
@@ -910,6 +927,9 @@ test('canDispatchSelected gates continue/recover actions on current capability',
 
 test('execution_unavailable marks capability unconfirmed until it is re-checked', () => {
   const base = {
+    strategy: 'new',
+    hasSelectedSourceSession: false,
+    selectedSourceSessionSuitable: false,
     dispatchBusy: false,
     sessionApiAvailable: true,
     historyPhase: 'loaded',

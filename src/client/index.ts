@@ -1249,6 +1249,9 @@ function sessionLabelIdLength(sessions: readonly ExecutionSession[]): number {
 }
 
 interface ConfirmDispatchGateInput {
+  strategy: ExecutionStrategy
+  hasSelectedSourceSession: boolean
+  selectedSourceSessionSuitable: boolean
   dispatchBusy: boolean
   sessionApiAvailable: boolean
   historyPhase: 'idle' | 'loading' | 'loaded' | 'error'
@@ -1261,6 +1264,8 @@ interface ConfirmDispatchGateInput {
 
 /** Single gate for starting a brand-new execution. */
 function canConfirmDispatch(input: ConfirmDispatchGateInput): boolean {
+  const sourceSessionReady = input.strategy === 'new' ||
+    (input.hasSelectedSourceSession && input.selectedSourceSessionSuitable)
   return (
     !input.dispatchBusy &&
     input.sessionApiAvailable &&
@@ -1268,6 +1273,7 @@ function canConfirmDispatch(input: ConfirmDispatchGateInput): boolean {
     input.dispatchReady &&
     !input.capabilityChecking &&
     input.workspaceReady &&
+    sourceSessionReady &&
     !input.hasUnresolvedExecution &&
     !input.hasCurrentExecution
   )
@@ -2876,6 +2882,9 @@ window.__ModuleLoader__.load({
             const sourceSession = sessionsInWorkspace.find(
               (session) => session.sessionId === executionSessionId,
             )
+            const selectedSourceSessionSuitable = strategySessions.some(
+              (session) => session.sessionId === executionSessionId,
+            )
             const unsuitableCount = sessionsInWorkspace.length - strategySessions.length
             const unknownCount = sessionsInWorkspace.filter(
               (session) => session.blankState === 'unknown',
@@ -2884,6 +2893,9 @@ window.__ModuleLoader__.load({
             const unresolvedHistory = unresolvedExecutions(executionHistory)
             const workspaceReady = workspace !== undefined && workspace.available
             const confirmGate = canConfirmDispatch({
+              strategy: executionStrategy,
+              hasSelectedSourceSession: sourceSession !== undefined,
+              selectedSourceSessionSuitable,
               dispatchBusy,
               sessionApiAvailable: dispatchAvailable,
               historyPhase,

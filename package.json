@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-inbox",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Session-decoupled task inbox for DeepSeek Harness: collect todos, then dispatch them to a workspace session for an Agent to execute.",
   "license": "MIT",
   "author": "DSH Task Inbox contributors",
