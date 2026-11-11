@@ -1271,7 +1271,7 @@ const WORKBENCH_CSS = `
 .dti-detail-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
 .dti-detail-section{margin-top:17px;padding-top:14px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dti-detail-section-title{margin:0 0 10px;font-size:12px;font-weight:500}
-.dti-detail-meta{display:grid;grid-template-columns:minmax(76px,.7fr) minmax(0,1.3fr);gap:8px 12px;font-size:12px;line-height:1.5}
+.dti-detail-meta{display:flex;flex-direction:column;gap:8px;font-size:12px;line-height:1.5}.dti-detail-meta-pair{display:grid;grid-template-columns:minmax(76px,.7fr) minmax(0,1.3fr);gap:8px 12px;min-width:0}
 .dti-detail-key{color:var(--dsw-alias-label-secondary)}
 .dti-detail-value{min-width:0;overflow-wrap:anywhere}
 .dti-history-item{margin-top:8px;padding:10px 11px;border-radius:9px;background:var(--dsw-alias-bg-layer-2)}
@@ -4391,7 +4391,7 @@ window.__ModuleLoader__.load({
                 )
 
             function detailMeta(label: string, value: string): unknown {
-              return h(React.Fragment, null,
+              return h('div', { className: 'dti-detail-meta-pair' },
                 h('div', { className: 'dti-detail-key' }, label),
                 h('div', { className: 'dti-detail-value' }, value),
               )
