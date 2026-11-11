@@ -40,6 +40,7 @@ export type ApiOperation =
   | { op: 'delete'; id: string }
   | { op: 'move'; id: string; direction: MoveDirection }
   | { op: 'execution-context' }
+  | { op: 'execution-overview' }
   | {
       op: 'execution-intent'
       clientRequestId: string
@@ -112,6 +113,7 @@ export function parseApiPayload(payload: unknown): ParseResult {
     case 'list':
       return { ok: true, operation: { op } }
     case 'execution-context':
+    case 'execution-overview':
       return { ok: true, operation: { op } }
     case 'execution-intent': {
       const clientRequestId = readStringField(payload, 'clientRequestId')
@@ -294,6 +296,12 @@ export async function handleOperation(
     switch (operation.op) {
       case 'list':
         return success({ todos: service.list() })
+      case 'execution-overview': {
+        if (executionService === undefined || typeof executionService.listOverview !== 'function') {
+          return failure('execution_unavailable', 'Execution overview is not available in this profile.')
+        }
+        return success({ executions: executionService.listOverview() })
+      }
       case 'execution-context': {
         if (executionContext === undefined) {
           return failure(
